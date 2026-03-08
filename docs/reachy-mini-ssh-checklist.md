@@ -209,7 +209,13 @@ PYTHONPATH=src python3 -m reachy_twitch_voice.main \
 PCから同期するときは `.env.local` を除外:
 
 ```bash
-rsync -av --delete --exclude '.env.local' ./ <REACHY_USER>@<REACHY_HOST>:<PROJECT_DIR_ON_REACHY>/
+rsync -av --delete \
+  --exclude '.env.local' \
+  --exclude '.git/' \
+  --exclude '.venv/' \
+  --exclude 'tests/' \
+  --exclude '__pycache__/' \
+  ./ <REACHY_USER>@<REACHY_HOST>:<PROJECT_DIR_ON_REACHY>/
 ```
 
 ---

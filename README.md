@@ -21,6 +21,7 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - `TWITCH_NICK` (required)
 - `OPENAI_API_KEY` (required)
 - `OPENAI_REALTIME_MODEL` (optional, default: `gpt-4o-mini`)
+- `CONVERSATION_ENGINE` (optional, default: `realtime`, values: `realtime|http`)
 - `CONVERSATION_INPUT_MODE` (optional, default: `twitch`)
 - `TWITCH_MESSAGE_CONTEXT_WINDOW` (optional, default: `30`)
 - `OPENAI_TIMEOUT_SEC` (optional, default: `10.0`)
@@ -37,6 +38,9 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - `RECONNECT_MAX_SEC` (optional, default: `30`)
 - `IDLE_MOTION_ENABLED` (optional, default: `true`)
 - `IDLE_INTERVAL_SEC` (optional, default: `3`)
+- `MAX_QUEUE_SIZE` (optional, default: `100`)
+- `MAX_QUEUE_WAIT_MS` (optional, default: `15000`)
+- `QUEUE_DROP_POLICY` (optional, default: `drop_oldest`)
 - `REACHY_TTS_ENGINE` (optional, default: `espeak-ng`)
 - `REACHY_TTS_LANG` (optional, default: `ja`)
 - `REACHY_TTS_OPENAI_MODEL` (optional, default: `gpt-4o-mini-tts`)
@@ -44,6 +48,7 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - `REACHY_TTS_OPENAI_FORMAT` (optional, default: `wav`)
 - `REACHY_TTS_OPENAI_SPEED` (optional, default: `1.15`)
 - `REACHY_GESTURE_ENABLED` (optional, default: `true`)
+- `REACHY_SPEECH_MOTION_ENABLED` (optional, default: `true`)
 - `REACHY_EXECUTION_HOST` (optional, default: `on_reachy`)
 - `REACHY_CONNECTION_MODE` (optional, default: `auto`)
 - `REACHY_EXECUTION_HOST=on_reachy`: Reachy本体(Raspberry Pi)で実行
@@ -78,8 +83,14 @@ cp .env.local.example .env.local
 - 本体側の `.env.local` は固定パスに置いて `--env-file` で読む
 
 ```bash
-# 例: PC側から本体に同期（.env.local は送らない）
-rsync -av --delete --exclude '.env.local' ./ <REACHY_USER>@<REACHY_HOST>:<PROJECT_DIR_ON_REACHY>/
+# 例: PC側から本体に同期（認証情報/開発用ファイルは送らない）
+rsync -av --delete \
+  --exclude '.env.local' \
+  --exclude '.git/' \
+  --exclude '.venv/' \
+  --exclude 'tests/' \
+  --exclude '__pycache__/' \
+  ./ <REACHY_USER>@<REACHY_HOST>:<PROJECT_DIR_ON_REACHY>/
 ```
 
 ```bash
@@ -211,10 +222,13 @@ curl -s -H "Authorization: OAuth ${TOKEN}" https://id.twitch.tv/oauth2/validate
 ## Conversation Behavior
 
 - 入力は Twitch チャットのみ（マイク入力は無効）
+- `CONVERSATION_ENGINE=realtime` は Realtimeスタイルの直列処理（active response競合回避）で動作
 - 返答は全コメント対象
 - 直近30コメントを文脈として話題を膨らませる
 - 感情ラベル（`joy` / `surprise` / `empathy`）を同時生成し、動作へ同期
+- 発話中は conversation app の `speech_tapper` に近いVAD+揺れ生成で、頭部とアンテナを音声レベル追従で動かす
 - OpenAI呼び出し失敗時は定型文へフォールバックして継続
+- キュー混雑時は `drop_oldest` で古いメッセージを間引きし、遅延崩壊を防ぐ
 - `OPERATOR_USERNAMES` に一致するユーザー発言は「Operator」として扱う
 - チャット無入力が続くと待機モーションを実行する（`IDLE_MOTION_ENABLED=true`）
 
