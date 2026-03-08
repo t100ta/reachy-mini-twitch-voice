@@ -3,6 +3,8 @@
 このドキュメントは、Reachy Mini の Raspberry Pi に SSH で入り、
 Python で SDK と発話 API を確認するための手順です。
 
+コマンド例の `<PROJECT_DIR_ON_REACHY>` / `<REACHY_USER>` / `<REACHY_HOST>` は実環境の値に置き換えてください。
+
 ## 0. 前提
 
 - Reachy Mini と操作PCが同じネットワークにいること
@@ -191,14 +193,14 @@ exit
 
 ```bash
 mkdir -p ~/.config/reachy-mini-twitch-voice
-cp ~/dev/reachy-mini-twitch-voice/.env.local.example ~/.config/reachy-mini-twitch-voice/.env.local
+cp <PROJECT_DIR_ON_REACHY>/.env.local.example ~/.config/reachy-mini-twitch-voice/.env.local
 chmod 600 ~/.config/reachy-mini-twitch-voice/.env.local
 ```
 
 実行は毎回以下で統一:
 
 ```bash
-cd ~/dev/reachy-mini-twitch-voice
+cd <PROJECT_DIR_ON_REACHY>
 PYTHONPATH=src python3 -m reachy_twitch_voice.main \
   --env-file ~/.config/reachy-mini-twitch-voice/.env.local \
   --log-level INFO
@@ -207,7 +209,7 @@ PYTHONPATH=src python3 -m reachy_twitch_voice.main \
 PCから同期するときは `.env.local` を除外:
 
 ```bash
-rsync -av --delete --exclude '.env.local' ./ pollen@reachy-mini.local:~/dev/reachy-mini-twitch-voice/
+rsync -av --delete --exclude '.env.local' ./ <REACHY_USER>@<REACHY_HOST>:<PROJECT_DIR_ON_REACHY>/
 ```
 
 ---

@@ -2,6 +2,8 @@
 
 Reachy Mini が Twitch チャットをリアルタイム受信して、日本語で読み上げるアプリです。
 
+コマンド例の `<PROJECT_DIR>` / `<PROJECT_DIR_ON_REACHY>` / `<REACHY_USER>` / `<REACHY_HOST>` は実環境に合わせて置き換えてください。
+
 ## Features
 
 - Twitch IRC 受信（TLS, 自動再接続）
@@ -77,19 +79,19 @@ cp .env.local.example .env.local
 
 ```bash
 # 例: PC側から本体に同期（.env.local は送らない）
-rsync -av --delete --exclude '.env.local' ./ pollen@reachy-mini.local:~/dev/reachy-mini-twitch-voice/
+rsync -av --delete --exclude '.env.local' ./ <REACHY_USER>@<REACHY_HOST>:<PROJECT_DIR_ON_REACHY>/
 ```
 
 ```bash
 # 本体側で初回のみ
 mkdir -p ~/.config/reachy-mini-twitch-voice
-cp ~/dev/reachy-mini-twitch-voice/.env.local.example ~/.config/reachy-mini-twitch-voice/.env.local
+cp <PROJECT_DIR_ON_REACHY>/.env.local.example ~/.config/reachy-mini-twitch-voice/.env.local
 chmod 600 ~/.config/reachy-mini-twitch-voice/.env.local
 ```
 
 ```bash
 # 実行時は固定のenvを指定
-cd ~/dev/reachy-mini-twitch-voice
+cd <PROJECT_DIR>
 PYTHONPATH=src python3 -m reachy_twitch_voice.main \
   --env-file ~/.config/reachy-mini-twitch-voice/.env.local \
   --log-level INFO
@@ -98,7 +100,7 @@ PYTHONPATH=src python3 -m reachy_twitch_voice.main \
 ## Setup with uv
 
 ```bash
-cd /home/tom_t100ta/dev/reachy-mini-twitch-voice
+cd <PROJECT_DIR>
 uv python install 3.12
 uv venv --python 3.12
 source .venv/bin/activate
@@ -154,7 +156,7 @@ curl -i http://localhost:8000/api/state/full
 ## Run (mock)
 
 ```bash
-cd /home/tom_t100ta/dev/reachy-mini-twitch-voice
+cd <PROJECT_DIR>
 export TWITCH_CHANNEL=your_channel
 export TWITCH_OAUTH_TOKEN=xxxxxxxx
 export TWITCH_NICK=your_bot_name
@@ -164,7 +166,7 @@ PYTHONPATH=src python3 -m reachy_twitch_voice.main --mock
 ## Run (Reachy SDK)
 
 ```bash
-cd /home/tom_t100ta/dev/reachy-mini-twitch-voice
+cd <PROJECT_DIR>
 cp .env.local.example .env.local
 # .env.local を編集して値を入れる
 PYTHONPATH=src python3 -m reachy_twitch_voice.main
@@ -219,14 +221,14 @@ curl -s -H "Authorization: OAuth ${TOKEN}" https://id.twitch.tv/oauth2/validate
 ## Tests
 
 ```bash
-cd /home/tom_t100ta/dev/reachy-mini-twitch-voice
+cd <PROJECT_DIR>
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
 ## Local E2E (no Twitch connection)
 
 ```bash
-cd /home/tom_t100ta/dev/reachy-mini-twitch-voice
+cd <PROJECT_DIR>
 PYTHONPATH=src python3 -m reachy_twitch_voice.main --mock --replay-file samples/replay_irc.txt
 ```
 
