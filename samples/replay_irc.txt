@@ -1,0 +1,4 @@
+:alice!alice@alice.tmi.twitch.tv PRIVMSG #mychan :こんにちは Reachy Mini!
+:bob!bob@bob.tmi.twitch.tv PRIVMSG #mychan :https://example.com 見てね
+:carol!carol@carol.tmi.twitch.tv PRIVMSG #mychan :すごーーーーーーい
+:baduser!baduser@baduser.tmi.twitch.tv PRIVMSG #mychan :死ね
