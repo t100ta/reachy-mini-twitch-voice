@@ -25,6 +25,8 @@ class ConversationFlowTest(unittest.TestCase):
         self.assertEqual(ev.message_id, "m1")
         self.assertEqual(ev.user_name, "alice")
         self.assertEqual(ev.text, "hello")
+        self.assertEqual(ev.source, "twitch")
+        self.assertEqual(ev.queue_age_ms, 0.0)
 
     def test_tool_executor_emotion_mapping(self) -> None:
         ex = ToolExecutor()

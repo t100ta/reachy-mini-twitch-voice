@@ -45,6 +45,8 @@ class ConversationInputEvent:
     text: str
     received_at: float
     is_operator: bool = False
+    source: str = "twitch"
+    queue_age_ms: float = 0.0
 
 
 @dataclass(slots=True)
@@ -67,6 +69,7 @@ class RuntimeStats:
     processed: int = 0
     filtered: int = 0
     failed: int = 0
+    dropped: int = 0
     latency_ms_samples: list[float] | None = None
 
     def __post_init__(self) -> None:

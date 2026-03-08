@@ -24,6 +24,9 @@ class RuntimeConfig:
     reconnect_max_sec: int = 30
     idle_motion_enabled: bool = True
     idle_interval_sec: float = 3.0
+    max_queue_size: int = 100
+    max_queue_wait_ms: int = 15000
+    drop_policy: str = "drop_oldest"
 
 
 @dataclass(slots=True)
@@ -35,6 +38,7 @@ class ReachyConfig:
     tts_openai_format: str = "wav"
     tts_openai_speed: float = 1.15
     gesture_enabled: bool = True
+    speech_motion_enabled: bool = True
     execution_host: str = "on_reachy"
     connection_mode: str = "auto"
     audio_volume: int | None = None
@@ -47,6 +51,7 @@ class ReachyConfig:
 
 @dataclass(slots=True)
 class ConversationConfig:
+    engine: str = "realtime"
     input_mode: str = "twitch"
     context_window_size: int = 30
     openai_api_key: str = ""
@@ -100,6 +105,11 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
     reconnect_max_sec = int(os.getenv("RECONNECT_MAX_SEC", "30"))
     idle_motion_enabled = _as_bool(os.getenv("IDLE_MOTION_ENABLED", "true"), True)
     idle_interval_sec = float(os.getenv("IDLE_INTERVAL_SEC", "3.0"))
+    max_queue_size = max(1, int(os.getenv("MAX_QUEUE_SIZE", "100")))
+    max_queue_wait_ms = max(0, int(os.getenv("MAX_QUEUE_WAIT_MS", "15000")))
+    drop_policy = os.getenv("QUEUE_DROP_POLICY", "drop_oldest").strip().lower() or "drop_oldest"
+    if drop_policy not in {"drop_oldest"}:
+        drop_policy = "drop_oldest"
     tts_engine = os.getenv("REACHY_TTS_ENGINE", "espeak-ng").strip() or "espeak-ng"
     tts_lang = os.getenv("REACHY_TTS_LANG", "ja").strip() or "ja"
     tts_openai_model = (
@@ -114,6 +124,10 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
     )
     tts_openai_speed = float(os.getenv("REACHY_TTS_OPENAI_SPEED", "1.15"))
     gesture_enabled = _as_bool(os.getenv("REACHY_GESTURE_ENABLED", "true"), True)
+    speech_motion_enabled = _as_bool(
+        os.getenv("REACHY_SPEECH_MOTION_ENABLED", "true"),
+        True,
+    )
     execution_host = (
         os.getenv("REACHY_EXECUTION_HOST", "on_reachy").strip() or "on_reachy"
     )
@@ -137,6 +151,9 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
     )
     idle_use_doa = _as_bool(os.getenv("IDLE_USE_DOA", "false"), False)
     input_mode = os.getenv("CONVERSATION_INPUT_MODE", "twitch").strip() or "twitch"
+    conversation_engine = os.getenv("CONVERSATION_ENGINE", "realtime").strip().lower() or "realtime"
+    if conversation_engine not in {"http", "realtime"}:
+        conversation_engine = "realtime"
     context_window_size = int(os.getenv("TWITCH_MESSAGE_CONTEXT_WINDOW", "30"))
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
     openai_realtime_model = (
@@ -172,6 +189,9 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
             reconnect_max_sec=reconnect_max_sec,
             idle_motion_enabled=idle_motion_enabled,
             idle_interval_sec=idle_interval_sec,
+            max_queue_size=max_queue_size,
+            max_queue_wait_ms=max_queue_wait_ms,
+            drop_policy=drop_policy,
         ),
         reachy=ReachyConfig(
             tts_engine=tts_engine,
@@ -181,6 +201,7 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
             tts_openai_format=tts_openai_format,
             tts_openai_speed=tts_openai_speed,
             gesture_enabled=gesture_enabled,
+            speech_motion_enabled=speech_motion_enabled,
             execution_host=execution_host,
             connection_mode=connection_mode,
             audio_volume=audio_volume,
@@ -191,6 +212,7 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
             idle_use_doa=idle_use_doa,
         ),
         conversation=ConversationConfig(
+            engine=conversation_engine,
             input_mode=input_mode,
             context_window_size=context_window_size,
             openai_api_key=openai_api_key,

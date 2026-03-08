@@ -12,8 +12,22 @@ def parse_privmsg(raw: str) -> TwitchMessage | None:
     if " PRIVMSG #" not in raw:
         return None
 
+    received_at = time.time()
+    line = raw
+    if raw.startswith("@") and " :" in raw:
+        try:
+            tags, line = raw.split(" ", 1)
+            for kv in tags.lstrip("@").split(";"):
+                if kv.startswith("tmi-sent-ts="):
+                    ms = int(kv.split("=", 1)[1])
+                    if ms > 0:
+                        received_at = ms / 1000.0
+                    break
+        except Exception:
+            line = raw
+
     try:
-        prefix, trailing = raw.split(" PRIVMSG #", 1)
+        prefix, trailing = line.split(" PRIVMSG #", 1)
         channel, text = trailing.split(" :", 1)
         user = prefix.split("!", 1)[0].lstrip(":")
     except ValueError:
@@ -29,5 +43,5 @@ def parse_privmsg(raw: str) -> TwitchMessage | None:
         user_id=user.lower(),
         user_name=user,
         text=text,
-        received_at=time.time(),
+        received_at=received_at,
     )

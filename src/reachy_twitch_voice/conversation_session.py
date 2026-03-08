@@ -7,8 +7,8 @@ import logging
 import re
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from .config import ConversationConfig, SafetyConfig
 from .types import ConversationInputEvent, ConversationOutputEvent, ConversationTurn
@@ -17,95 +17,17 @@ FALLBACK_REPLY = "コメントありがとう！その話、もう少し詳し�
 LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
-class OpenAIRealtimeSession:
-    cfg: ConversationConfig
-    safety_cfg: SafetyConfig
-    turns: list[ConversationTurn]
-    system_prompt: str
+class ConversationSession(Protocol):
+    async def generate(self, event: ConversationInputEvent) -> ConversationOutputEvent:
+        ...
 
+
+class _OpenAISessionBase:
     def __init__(self, cfg: ConversationConfig, safety_cfg: SafetyConfig) -> None:
         self.cfg = cfg
         self.safety_cfg = safety_cfg
-        self.turns = []
+        self.turns: list[ConversationTurn] = []
         self.system_prompt = self._load_system_prompt()
-
-    async def generate(self, event: ConversationInputEvent) -> ConversationOutputEvent:
-        if not self.cfg.openai_api_key:
-            return self._fallback_output()
-
-        try:
-            response_text = await asyncio.to_thread(self._call_openai, event)
-        except Exception as exc:
-            LOGGER.warning("OpenAI generation failed, fallback reply is used: %s", exc)
-            return self._fallback_output()
-        parsed = self._parse_response(response_text)
-        safe = self._post_safety(parsed.reply_text)
-        if not safe:
-            return self._fallback_output()
-
-        output = ConversationOutputEvent(
-            reply_text=safe,
-            emotion=parsed.emotion,
-            tool_calls=parsed.tool_calls,
-        )
-        self.turns.append(
-            ConversationTurn(
-                user_name=event.user_name,
-                text=event.text,
-                assistant_reply=output.reply_text,
-                emotion=output.emotion,
-            )
-        )
-        self.turns = self.turns[-self.cfg.context_window_size :]
-        return output
-
-    def _call_openai(self, event: ConversationInputEvent) -> str:
-        history_lines = [
-            f"{t.user_name}: {t.text}\\nassistant: {t.assistant_reply} ({t.emotion})"
-            for t in self.turns[-self.cfg.context_window_size :]
-        ]
-        history_text = "\\n".join(history_lines)
-        prompt = self._build_prompt(event, history_text)
-        payload = {
-            "model": self.cfg.openai_realtime_model,
-            "input": prompt,
-        }
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/responses",
-            data=data,
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {self.cfg.openai_api_key}",
-                "Content-Type": "application/json",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self.cfg.openai_timeout_sec) as resp:
-                body = resp.read().decode("utf-8")
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            LOGGER.warning("OpenAI HTTP request failed, fallback reply is used: %s", exc)
-            return json.dumps(
-                {"reply": FALLBACK_REPLY, "emotion": "empathy", "tool_calls": []}
-            )
-
-        try:
-            parsed = json.loads(body)
-            if isinstance(parsed.get("output_text"), str) and parsed["output_text"].strip():
-                return parsed["output_text"]
-            # Fallback parse for response item format.
-            output = parsed.get("output", [])
-            if output and isinstance(output, list):
-                content = output[0].get("content", [])
-                if content and isinstance(content, list):
-                    text = content[0].get("text", "")
-                    if text:
-                        return text
-        except Exception:
-            pass
-
-        return json.dumps({"reply": FALLBACK_REPLY, "emotion": "empathy", "tool_calls": []})
 
     def _build_prompt(self, event: ConversationInputEvent, history_text: str) -> str:
         return (
@@ -113,6 +35,8 @@ class OpenAIRealtimeSession:
             f"\\n[history]\\n{history_text}"
             f"\\n[user] {event.user_name}: {event.text}"
             f"\\n[user_meta] is_operator={str(event.is_operator).lower()}"
+            f" source={event.source}"
+            f" queue_age_ms={event.queue_age_ms:.1f}"
         )
 
     def _load_system_prompt(self) -> str:
@@ -162,7 +86,6 @@ class OpenAIRealtimeSession:
 
     def _parse_response(self, raw: str) -> ConversationOutputEvent:
         text = raw.strip()
-        # Extract JSON object if the model wrapped it with extra text.
         m = re.search(r"\{.*\}", text, flags=re.S)
         if m:
             text = m.group(0)
@@ -202,3 +125,149 @@ class OpenAIRealtimeSession:
             emotion="empathy",
             tool_calls=[],
         )
+
+    def _append_turn(self, event: ConversationInputEvent, output: ConversationOutputEvent) -> None:
+        self.turns.append(
+            ConversationTurn(
+                user_name=event.user_name,
+                text=event.text,
+                assistant_reply=output.reply_text,
+                emotion=output.emotion,
+            )
+        )
+        self.turns = self.turns[-self.cfg.context_window_size :]
+
+    def _history_text(self) -> str:
+        history_lines = [
+            f"{t.user_name}: {t.text}\\nassistant: {t.assistant_reply} ({t.emotion})"
+            for t in self.turns[-self.cfg.context_window_size :]
+        ]
+        return "\\n".join(history_lines)
+
+    def _call_openai_http(self, event: ConversationInputEvent) -> str:
+        payload = {
+            "model": self.cfg.openai_realtime_model,
+            "input": self._build_prompt(event, self._history_text()),
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/responses",
+            data=data,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.cfg.openai_api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.cfg.openai_timeout_sec) as resp:
+                body = resp.read().decode("utf-8")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            LOGGER.warning("OpenAI HTTP request failed, fallback reply is used: %s", exc)
+            return json.dumps(
+                {"reply": FALLBACK_REPLY, "emotion": "empathy", "tool_calls": []}
+            )
+
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed.get("output_text"), str) and parsed["output_text"].strip():
+                return parsed["output_text"]
+            output = parsed.get("output", [])
+            if output and isinstance(output, list):
+                content = output[0].get("content", [])
+                if content and isinstance(content, list):
+                    text = content[0].get("text", "")
+                    if text:
+                        return text
+        except Exception:
+            pass
+
+        return json.dumps({"reply": FALLBACK_REPLY, "emotion": "empathy", "tool_calls": []})
+
+
+class OpenAIHttpSession(_OpenAISessionBase):
+    async def generate(self, event: ConversationInputEvent) -> ConversationOutputEvent:
+        if not self.cfg.openai_api_key:
+            return self._fallback_output()
+
+        try:
+            response_text = await asyncio.to_thread(self._call_openai_http, event)
+        except Exception as exc:
+            LOGGER.warning("OpenAI generation failed, fallback reply is used: %s", exc)
+            return self._fallback_output()
+
+        parsed = self._parse_response(response_text)
+        safe = self._post_safety(parsed.reply_text)
+        if not safe:
+            return self._fallback_output()
+
+        output = ConversationOutputEvent(
+            reply_text=safe,
+            emotion=parsed.emotion,
+            tool_calls=parsed.tool_calls,
+        )
+        self._append_turn(event, output)
+        return output
+
+
+class OpenAIRealtimeSession(_OpenAISessionBase):
+    """Realtime-style serialized session.
+
+    The worker serializes `conversation.item.create -> response.create` semantics.
+    If websocket realtime transport is unavailable, it falls back to HTTP while
+    keeping the same serialization and retry guarantees.
+    """
+
+    def __init__(self, cfg: ConversationConfig, safety_cfg: SafetyConfig) -> None:
+        super().__init__(cfg, safety_cfg)
+        self._response_lock = asyncio.Lock()
+
+    async def generate(self, event: ConversationInputEvent) -> ConversationOutputEvent:
+        if not self.cfg.openai_api_key:
+            return self._fallback_output()
+
+        try:
+            async with self._response_lock:
+                return await asyncio.wait_for(
+                    self._generate_with_retry(event),
+                    timeout=max(self.cfg.openai_timeout_sec, 1.0) + 5.0,
+                )
+        except asyncio.TimeoutError:
+            LOGGER.warning("Realtime generation timed out; fallback reply is used")
+            return self._fallback_output()
+
+    async def _generate_with_retry(self, event: ConversationInputEvent) -> ConversationOutputEvent:
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                response_text = await asyncio.to_thread(self._call_openai, event)
+                parsed = self._parse_response(response_text)
+                safe = self._post_safety(parsed.reply_text)
+                if not safe:
+                    return self._fallback_output()
+                output = ConversationOutputEvent(
+                    reply_text=safe,
+                    emotion=parsed.emotion,
+                    tool_calls=parsed.tool_calls,
+                )
+                self._append_turn(event, output)
+                return output
+            except Exception as exc:
+                last_error = exc
+                await asyncio.sleep(0.1 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
+        return self._fallback_output()
+
+    def _call_openai(self, event: ConversationInputEvent) -> str:
+        # Realtime transport can be plugged in here later without changing orchestrator.
+        return self._call_openai_http(event)
+
+
+def create_conversation_session(
+    cfg: ConversationConfig,
+    safety_cfg: SafetyConfig,
+) -> ConversationSession:
+    if cfg.engine == "http":
+        return OpenAIHttpSession(cfg, safety_cfg)
+    return OpenAIRealtimeSession(cfg, safety_cfg)

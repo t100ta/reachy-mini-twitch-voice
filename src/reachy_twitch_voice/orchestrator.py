@@ -6,8 +6,8 @@ import time
 from dataclasses import dataclass
 
 from .config import PipelineConfig
-from .conversation_session import FALLBACK_REPLY, OpenAIRealtimeSession
-from .input_adapter import TwitchChatInputAdapter
+from .conversation_session import FALLBACK_REPLY, ConversationSession, create_conversation_session
+from .input_adapter import RealtimeInputAdapter
 from .normalizer import normalize_comment
 from .reachy_adapter import ReachyAdapter
 from .safety import SafetyFilter
@@ -23,8 +23,8 @@ class AppDeps:
     cfg: PipelineConfig
     adapter: ReachyAdapter
     irc_messages: asyncio.Queue[str]
-    input_adapter: TwitchChatInputAdapter | None = None
-    conversation: OpenAIRealtimeSession | None = None
+    input_adapter: RealtimeInputAdapter | None = None
+    conversation: ConversationSession | None = None
     tool_executor: ToolExecutor | None = None
 
 
@@ -33,9 +33,10 @@ class AppOrchestrator:
         self.deps = deps
         self.stats = RuntimeStats()
         self.filter = SafetyFilter(deps.cfg.safety)
-        self.input_adapter = deps.input_adapter or TwitchChatInputAdapter()
-        self.conversation = deps.conversation or OpenAIRealtimeSession(
-            deps.cfg.conversation, deps.cfg.safety
+        self.input_adapter = deps.input_adapter or RealtimeInputAdapter()
+        self.conversation = deps.conversation or create_conversation_session(
+            deps.cfg.conversation,
+            deps.cfg.safety,
         )
         self.tool_executor = deps.tool_executor or ToolExecutor()
         self.operator_usernames = set(deps.cfg.conversation.operator_usernames)
@@ -53,6 +54,16 @@ class AppOrchestrator:
             return
 
         event = self.input_adapter.to_conversation_input(msg)
+        event.queue_age_ms = max((time.time() - msg.received_at) * 1000.0, 0.0)
+        if event.queue_age_ms > self.deps.cfg.runtime.max_queue_wait_ms:
+            self.stats.dropped += 1
+            LOGGER.info(
+                "Dropped stale message id=%s queue_age_ms=%.1f limit_ms=%s",
+                msg.id,
+                event.queue_age_ms,
+                self.deps.cfg.runtime.max_queue_wait_ms,
+            )
+            return
         event.text = decision.sanitized_text or normalized
         event.is_operator = msg.user_name.lower() in self.operator_usernames
         try:

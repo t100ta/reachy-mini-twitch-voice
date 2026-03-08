@@ -16,6 +16,13 @@ class TwitchParserTest(unittest.TestCase):
     def test_ignore_non_privmsg(self) -> None:
         self.assertIsNone(parse_privmsg("PING :tmi.twitch.tv"))
 
+    def test_uses_tmi_sent_ts_when_present(self) -> None:
+        raw = "@tmi-sent-ts=1000 :alice!alice@alice.tmi.twitch.tv PRIVMSG #mychan :こんにちは"
+        msg = parse_privmsg(raw)
+        self.assertIsNotNone(msg)
+        assert msg is not None
+        self.assertEqual(msg.received_at, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

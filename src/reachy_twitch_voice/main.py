@@ -6,7 +6,7 @@ import logging
 import os
 from pathlib import Path
 
-from .config import load_config_from_env
+from .config import RuntimeConfig, load_config_from_env
 from .dotenv_loader import load_env_file
 from .orchestrator import AppDeps, AppOrchestrator
 from .reachy_adapter import MockReachyAdapter, ReachyMiniAdapter
@@ -15,25 +15,58 @@ from .twitch_irc import TwitchIrcClient
 LOGGER = logging.getLogger(__name__)
 
 
-async def _forward_irc_to_queue(client: TwitchIrcClient, q: asyncio.Queue[str]) -> None:
+def _enqueue_with_policy(
+    q: asyncio.Queue[str],
+    raw: str,
+    runtime_cfg: RuntimeConfig,
+) -> bool:
+    if q.qsize() < runtime_cfg.max_queue_size:
+        q.put_nowait(raw)
+        return False
+    if runtime_cfg.drop_policy == "drop_oldest":
+        try:
+            q.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        q.put_nowait(raw)
+        return True
+    return True
+
+
+async def _forward_irc_to_queue(
+    client: TwitchIrcClient,
+    q: asyncio.Queue[str],
+    runtime_cfg: RuntimeConfig,
+    app: AppOrchestrator,
+) -> None:
     async for raw in client.messages():
-        await q.put(raw)
+        dropped = _enqueue_with_policy(q, raw, runtime_cfg)
+        if dropped:
+            app.stats.dropped += 1
 
 
-async def _replay_file_to_queue(path: Path, q: asyncio.Queue[str]) -> None:
+async def _replay_file_to_queue(
+    path: Path,
+    q: asyncio.Queue[str],
+    runtime_cfg: RuntimeConfig,
+    app: AppOrchestrator,
+) -> None:
     with path.open("r", encoding="utf-8") as f:
         for line in f:
             raw = line.strip()
             if raw:
-                await q.put(raw)
+                dropped = _enqueue_with_policy(q, raw, runtime_cfg)
+                if dropped:
+                    app.stats.dropped += 1
 
 
 def _log_stats(app: AppOrchestrator) -> None:
     LOGGER.info(
-        "stats processed=%s filtered=%s failed=%s p95_reaction_ms=%.1f",
+        "stats processed=%s filtered=%s failed=%s dropped=%s p95_reaction_ms=%.1f",
         app.stats.processed,
         app.stats.filtered,
         app.stats.failed,
+        app.stats.dropped,
         app.stats.p95_latency_ms(),
     )
 
@@ -56,6 +89,7 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
             tts_openai_format=cfg.reachy.tts_openai_format,
             tts_openai_speed=cfg.reachy.tts_openai_speed,
             gesture_enabled=cfg.reachy.gesture_enabled,
+            speech_motion_enabled=cfg.reachy.speech_motion_enabled,
             audio_volume=cfg.reachy.audio_volume,
             healthcheck_url=cfg.reachy.healthcheck_url,
             connect_timeout_sec=cfg.reachy.connect_timeout_sec,
@@ -66,12 +100,13 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
         await sdk.connect()
         adapter = sdk
         LOGGER.info(
-            "Reachy adapter configured: mode=%s host=%s tts_engine=%s tts_lang=%s gesture_enabled=%s execution_host=%s input_mode=%s model=%s context_window=%s connect_timeout_sec=%.1f connect_retries=%s idle_use_doa=%s",
+            "Reachy adapter configured: mode=%s host=%s tts_engine=%s tts_lang=%s gesture_enabled=%s speech_motion_enabled=%s execution_host=%s input_mode=%s model=%s context_window=%s connect_timeout_sec=%.1f connect_retries=%s idle_use_doa=%s",
             cfg.reachy.connection_mode,
             reachy_host,
             cfg.reachy.tts_engine,
             cfg.reachy.tts_lang,
             cfg.reachy.gesture_enabled,
+            cfg.reachy.speech_motion_enabled,
             cfg.reachy.execution_host,
             cfg.conversation.input_mode,
             cfg.conversation.openai_realtime_model,
@@ -85,7 +120,7 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
     app = AppOrchestrator(deps)
 
     if replay_file:
-        await _replay_file_to_queue(Path(replay_file), q)
+        await _replay_file_to_queue(Path(replay_file), q, cfg.runtime, app)
         while not q.empty():
             raw = await q.get()
             await app.consume_once(raw)
@@ -97,7 +132,7 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
         oauth_token=cfg.twitch.oauth_token,
         channel=cfg.twitch.channel,
     )
-    producer = asyncio.create_task(_forward_irc_to_queue(irc, q))
+    producer = asyncio.create_task(_forward_irc_to_queue(irc, q, cfg.runtime, app))
     consumer = asyncio.create_task(app.run())
 
     done, pending = await asyncio.wait(

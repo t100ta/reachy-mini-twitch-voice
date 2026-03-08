@@ -137,6 +137,25 @@ class OrchestratorTest(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertGreaterEqual(adapter.idle_count, 1)
 
+    async def test_consume_once_stale_message_is_dropped(self) -> None:
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            runtime=RuntimeConfig(
+                message_timeout_ms=1000,
+                reconnect_max_sec=30,
+                max_queue_wait_ms=1,
+            ),
+        )
+        adapter = MockReachyAdapter()
+        deps = AppDeps(cfg=cfg, adapter=adapter, irc_messages=asyncio.Queue())
+        orch = AppOrchestrator(deps)
+
+        raw = "@tmi-sent-ts=1000 :alice!alice@alice.tmi.twitch.tv PRIVMSG #chan :hello"
+        await orch.consume_once(raw)
+
+        self.assertEqual(adapter.spoken, [])
+        self.assertEqual(orch.stats.dropped, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

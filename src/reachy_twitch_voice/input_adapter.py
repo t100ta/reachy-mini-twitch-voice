@@ -20,4 +20,10 @@ class TwitchChatInputAdapter(InputAdapter):
             text=msg.text,
             received_at=msg.received_at,
             is_operator=False,
+            source="twitch",
+            queue_age_ms=0.0,
         )
+
+
+class RealtimeInputAdapter(TwitchChatInputAdapter):
+    """Semantic alias to make the realtime input path explicit."""
