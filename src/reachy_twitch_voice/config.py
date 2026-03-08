@@ -52,6 +52,11 @@ class ConversationConfig:
     openai_api_key: str = ""
     openai_realtime_model: str = "gpt-4o-mini"
     openai_timeout_sec: float = 10.0
+    persona_name: str = "NUVA"
+    persona_name_kana: str = "ヌーバ"
+    operator_name: str = "にかなとむ(tom_t100ta)"
+    persona_style: str = "親しみを保ちつつ、常に適度に礼儀正しく"
+    system_prompt_file: str = ""
     operator_usernames: list[str] = field(
         default_factory=lambda: ["tom_t100ta", "にかなとむ"]
     )
@@ -138,6 +143,17 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
         os.getenv("OPENAI_REALTIME_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
     )
     openai_timeout_sec = float(os.getenv("OPENAI_TIMEOUT_SEC", "10.0"))
+    persona_name = os.getenv("PERSONA_NAME", "NUVA").strip() or "NUVA"
+    persona_name_kana = os.getenv("PERSONA_NAME_KANA", "ヌーバ").strip() or "ヌーバ"
+    operator_name = (
+        os.getenv("OPERATOR_NAME", "にかなとむ(tom_t100ta)").strip()
+        or "にかなとむ(tom_t100ta)"
+    )
+    persona_style = (
+        os.getenv("PERSONA_STYLE", "親しみを保ちつつ、常に適度に礼儀正しく").strip()
+        or "親しみを保ちつつ、常に適度に礼儀正しく"
+    )
+    system_prompt_file = os.getenv("SYSTEM_PROMPT_FILE", "").strip()
     operator_usernames = [
         u.strip().lower()
         for u in os.getenv("OPERATOR_USERNAMES", "tom_t100ta,にかなとむ").split(",")
@@ -180,6 +196,11 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
             openai_api_key=openai_api_key,
             openai_realtime_model=openai_realtime_model,
             openai_timeout_sec=openai_timeout_sec,
+            persona_name=persona_name,
+            persona_name_kana=persona_name_kana,
+            operator_name=operator_name,
+            persona_style=persona_style,
+            system_prompt_file=system_prompt_file,
             operator_usernames=operator_usernames or ["tom_t100ta", "にかなとむ"],
         ),
     )

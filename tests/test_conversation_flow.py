@@ -1,4 +1,5 @@
 import asyncio
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -72,6 +73,30 @@ class SessionFallbackTest(unittest.TestCase):
             out = asyncio.run(sess.generate(ev))
         self.assertTrue(out.reply_text)
         self.assertEqual(out.emotion, "empathy")
+
+    def test_system_prompt_template_replacement(self) -> None:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=True) as f:
+            f.write("name={{PERSONA_NAME}} kana={{PERSONA_NAME_KANA}} op={{OPERATOR_NAME}} style={{PERSONA_STYLE}}")
+            f.flush()
+            cfg = ConversationConfig(
+                openai_api_key="",
+                context_window_size=30,
+                persona_name="NUVA2",
+                persona_name_kana="ヌーバ2",
+                operator_name="operator-x",
+                persona_style="ていねい",
+                system_prompt_file=f.name,
+            )
+            sess = OpenAIRealtimeSession(cfg, SafetyConfig())
+
+        ev = ConversationInputEvent(
+            message_id="m3", user_name="alice", channel="chan", text="hello", received_at=1.0
+        )
+        prompt = sess._build_prompt(ev, "")
+        self.assertIn("name=NUVA2", prompt)
+        self.assertIn("kana=ヌーバ2", prompt)
+        self.assertIn("op=operator-x", prompt)
+        self.assertIn("style=ていねい", prompt)
 
 
 if __name__ == "__main__":

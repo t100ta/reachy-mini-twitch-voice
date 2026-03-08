@@ -22,6 +22,11 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - `CONVERSATION_INPUT_MODE` (optional, default: `twitch`)
 - `TWITCH_MESSAGE_CONTEXT_WINDOW` (optional, default: `30`)
 - `OPENAI_TIMEOUT_SEC` (optional, default: `10.0`)
+- `PERSONA_NAME` (optional, default: `NUVA`)
+- `PERSONA_NAME_KANA` (optional, default: `ヌーバ`)
+- `OPERATOR_NAME` (optional, default: `にかなとむ(tom_t100ta)`)
+- `PERSONA_STYLE` (optional, default: `親しみを保ちつつ、常に適度に礼儀正しく`)
+- `SYSTEM_PROMPT_FILE` (optional, default: empty = `src/reachy_twitch_voice/prompts/system_ja.txt`)
 - `OPERATOR_USERNAMES` (optional, default: `tom_t100ta,にかなとむ`)
 - `NG_WORDS` (optional, comma-separated)
 - `MAX_CHARS` (optional, default: `140`)
@@ -58,6 +63,11 @@ cp .env.local.example .env.local
 ```
 
 `.env.local` に Twitch/Reachy の値を設定しておけば、毎回 `export` は不要です。
+
+補足:
+- キャラクター設定は `.env.local` の `PERSONA_*` と `OPERATOR_NAME` で切り替え可能
+- 既定のsystem promptは `src/reachy_twitch_voice/prompts/system_ja.txt` を使用
+- カスタムpromptを使う場合のみ `SYSTEM_PROMPT_FILE` を指定（テンプレート変数: `{{PERSONA_NAME}}`, `{{PERSONA_NAME_KANA}}`, `{{OPERATOR_NAME}}`, `{{PERSONA_STYLE}}`）
 
 ## 再インストール/再同期時の注意
 

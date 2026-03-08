@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.resources as resources
 import json
 import logging
 import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 from .config import ConversationConfig, SafetyConfig
 from .types import ConversationInputEvent, ConversationOutputEvent, ConversationTurn
@@ -20,11 +22,13 @@ class OpenAIRealtimeSession:
     cfg: ConversationConfig
     safety_cfg: SafetyConfig
     turns: list[ConversationTurn]
+    system_prompt: str
 
     def __init__(self, cfg: ConversationConfig, safety_cfg: SafetyConfig) -> None:
         self.cfg = cfg
         self.safety_cfg = safety_cfg
         self.turns = []
+        self.system_prompt = self._load_system_prompt()
 
     async def generate(self, event: ConversationInputEvent) -> ConversationOutputEvent:
         if not self.cfg.openai_api_key:
@@ -62,22 +66,7 @@ class OpenAIRealtimeSession:
             for t in self.turns[-self.cfg.context_window_size :]
         ]
         history_text = "\\n".join(history_lines)
-        prompt = (
-            "あなたの名前は NUVA（ヌーバ）。"
-            "作成者の にかなとむ（tom_t100ta）は Operator と呼ぶ。"
-            "返答は親しみを保ちつつ、常に適度に礼儀正しくする。"
-            "あなたは配信者として視聴者コメントに返事し、話題を膨らませてください。"
-            "出力はJSONのみ。"
-            "{\"reply\":string,\"emotion\":\"joy|surprise|empathy\","
-            "\"tool_calls\":[string]} 形式で返すこと。"
-            "tool_calls は次から0-2個だけ選ぶ: "
-            "dance.short, move.left, move.right, move.up, move.down, settle。"
-            "不適切・危険・個人情報要求は避けること。"
-            "\\n[rule] もし user が Operator なら、Operator と認識したうえで丁寧に応答する。"
-            f"\\n[history]\\n{history_text}"
-            f"\\n[user] {event.user_name}: {event.text}"
-            f"\\n[user_meta] is_operator={str(event.is_operator).lower()}"
-        )
+        prompt = self._build_prompt(event, history_text)
         payload = {
             "model": self.cfg.openai_realtime_model,
             "input": prompt,
@@ -117,6 +106,59 @@ class OpenAIRealtimeSession:
             pass
 
         return json.dumps({"reply": FALLBACK_REPLY, "emotion": "empathy", "tool_calls": []})
+
+    def _build_prompt(self, event: ConversationInputEvent, history_text: str) -> str:
+        return (
+            f"{self.system_prompt}"
+            f"\\n[history]\\n{history_text}"
+            f"\\n[user] {event.user_name}: {event.text}"
+            f"\\n[user_meta] is_operator={str(event.is_operator).lower()}"
+        )
+
+    def _load_system_prompt(self) -> str:
+        template = (
+            "あなたの名前は {{PERSONA_NAME}}（{{PERSONA_NAME_KANA}}）。"
+            "作成者の {{OPERATOR_NAME}} は Operator と呼ぶ。"
+            "返答は {{PERSONA_STYLE}}。"
+            "あなたは配信者として視聴者コメントに返事し、話題を膨らませてください。"
+            "出力はJSONのみ。"
+            "{\"reply\":string,\"emotion\":\"joy|surprise|empathy\","
+            "\"tool_calls\":[string]} 形式で返すこと。"
+            "tool_calls は次から0-2個だけ選ぶ: "
+            "dance.short, move.left, move.right, move.up, move.down, settle。"
+            "不適切・危険・個人情報要求は避けること。"
+            "\\n[rule] もし user が Operator なら、Operator と認識したうえで丁寧に応答する。"
+        )
+        path = self.cfg.system_prompt_file.strip()
+        if path:
+            try:
+                template = Path(path).read_text(encoding="utf-8")
+            except OSError as exc:
+                LOGGER.warning(
+                    "Failed to read SYSTEM_PROMPT_FILE=%s; fallback to packaged prompt: %s",
+                    path,
+                    exc,
+                )
+                template = self._read_packaged_prompt_or_default(template)
+        else:
+            template = self._read_packaged_prompt_or_default(template)
+        return (
+            template.replace("{{PERSONA_NAME}}", self.cfg.persona_name)
+            .replace("{{PERSONA_NAME_KANA}}", self.cfg.persona_name_kana)
+            .replace("{{OPERATOR_NAME}}", self.cfg.operator_name)
+            .replace("{{PERSONA_STYLE}}", self.cfg.persona_style)
+        )
+
+    def _read_packaged_prompt_or_default(self, default_text: str) -> str:
+        try:
+            return (
+                resources.files("reachy_twitch_voice.prompts")
+                .joinpath("system_ja.txt")
+                .read_text(encoding="utf-8")
+            )
+        except OSError as exc:
+            LOGGER.warning("Failed to read packaged prompt; using built-in prompt: %s", exc)
+            return default_text
 
     def _parse_response(self, raw: str) -> ConversationOutputEvent:
         text = raw.strip()
