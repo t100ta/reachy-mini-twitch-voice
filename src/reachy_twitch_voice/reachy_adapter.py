@@ -16,6 +16,7 @@ import wave
 from abc import ABC, abstractmethod
 from typing import Any
 
+from .speech_tapper import frames_from_wav
 from .types import SpeechTask
 
 LOGGER = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ class ReachySdkAdapter(ReachyAdapter):
         tts_openai_format: str = "wav",
         tts_openai_speed: float = 1.15,
         gesture_enabled: bool = True,
+        speech_motion_enabled: bool = True,
         audio_volume: int | None = None,
         healthcheck_url: str = "http://localhost:8000/api/state/full",
         connect_timeout_sec: float = 45.0,
@@ -90,6 +92,7 @@ class ReachySdkAdapter(ReachyAdapter):
         self.tts_openai_format = tts_openai_format
         self.tts_openai_speed = tts_openai_speed
         self.gesture_enabled = gesture_enabled
+        self.speech_motion_enabled = speech_motion_enabled
         self.audio_volume = audio_volume
         self.healthcheck_url = healthcheck_url
         self.connect_timeout_sec = connect_timeout_sec
@@ -194,9 +197,19 @@ class ReachySdkAdapter(ReachyAdapter):
                     if wav_duration > 0
                     else self._estimate_speech_duration_sec(task.text_ja)
                 )
-                gesture_task = asyncio.create_task(
-                    self._run_gesture_loop(task.gesture_preset, min_duration, gesture_stop)
-                )
+                if self.speech_motion_enabled:
+                    gesture_task = asyncio.create_task(
+                        self._run_speech_motion_loop(
+                            wav_path,
+                            task.gesture_preset,
+                            min_duration,
+                            gesture_stop,
+                        )
+                    )
+                else:
+                    gesture_task = asyncio.create_task(
+                        self._run_gesture_loop(task.gesture_preset, min_duration, gesture_stop)
+                    )
 
             # Some media backends block, so offload playback from the event-loop thread.
             await asyncio.to_thread(self._play_sound, wav_path)
@@ -401,6 +414,117 @@ class ReachySdkAdapter(ReachyAdapter):
             if stop_event.is_set() and elapsed >= min_duration_sec:
                 break
         await asyncio.to_thread(self._gesture_end, preset)
+
+    async def _run_speech_motion_loop(
+        self,
+        wav_path: str,
+        base_preset: str,
+        min_duration_sec: float,
+        stop_event: asyncio.Event,
+    ) -> None:
+        frames = self._extract_sway_frames_from_wav(wav_path)
+        if not frames:
+            frames = [{"pitch_deg": 0.6, "yaw_deg": 0.0, "roll_deg": 0.0, "gain": 0.2}]
+        sign = -1.0 if base_preset in {"look", "tilt"} else 1.0
+        started = asyncio.get_running_loop().time()
+        idx = 0
+        while True:
+            fr = frames[min(idx, len(frames) - 1)]
+            yaw = float(fr["yaw_deg"]) * sign
+            roll = float(fr["roll_deg"]) * sign
+            await asyncio.to_thread(
+                self._play_speech_frame,
+                float(fr["pitch_deg"]),
+                yaw,
+                roll,
+                float(fr["gain"]),
+            )
+            await asyncio.sleep(0.05)
+            idx += 1
+            elapsed = asyncio.get_running_loop().time() - started
+            if stop_event.is_set() and elapsed >= min_duration_sec:
+                break
+        await asyncio.to_thread(self._gesture_end, "idle")
+
+    def _extract_sway_frames_from_wav(self, wav_path: str) -> list[dict[str, float]]:
+        try:
+            with wave.open(wav_path, "rb") as w:
+                frame_rate = max(w.getframerate(), 1)
+                channels = max(w.getnchannels(), 1)
+                sample_width = w.getsampwidth()
+                if sample_width != 2:
+                    return []
+                raw = w.readframes(w.getnframes())
+        except Exception:
+            return []
+        return frames_from_wav(raw, frame_rate, channels)
+
+    def _play_speech_frame(
+        self,
+        pitch_deg: float,
+        yaw_deg: float,
+        roll_deg: float,
+        gain: float,
+    ) -> bool:
+        try:
+            import numpy as np
+            from reachy_mini.motion.move import Move  # type: ignore
+            from reachy_mini.utils import create_head_pose  # type: ignore
+            from reachy_mini.utils.interpolation import linear_pose_interpolation  # type: ignore
+        except Exception:
+            return False
+
+        class _LinearMove(Move):  # type: ignore[misc]
+            def __init__(self, keyframes: list[tuple[float, Any]], antennas: list[tuple[float, tuple[float, float]]]) -> None:
+                self.keyframes = keyframes
+                self.antennas = antennas
+                self._duration = 0.12
+
+            @property
+            def duration(self) -> float:
+                return self._duration
+
+            def evaluate(self, t: float):  # type: ignore[override]
+                r = min(max(t / self._duration, 0.0), 1.0)
+                left = self.keyframes[0] if r <= 0.5 else self.keyframes[1]
+                right = self.keyframes[1] if r <= 0.5 else self.keyframes[2]
+                span = max(right[0] - left[0], 1e-6)
+                alpha = (r - left[0]) / span
+                pose = linear_pose_interpolation(left[1], right[1], alpha)
+                a_left = self.antennas[0] if r <= 0.5 else self.antennas[1]
+                a_right = self.antennas[1] if r <= 0.5 else self.antennas[2]
+                a_span = max(a_right[0] - a_left[0], 1e-6)
+                a_alpha = (r - a_left[0]) / a_span
+                ant = (
+                    a_left[1][0] + (a_right[1][0] - a_left[1][0]) * a_alpha,
+                    a_left[1][1] + (a_right[1][1] - a_left[1][1]) * a_alpha,
+                )
+                return (pose, np.array([ant[0], ant[1]], dtype=np.float64), 0.0)
+
+        g = min(max(gain, 0.0), 1.0)
+        center = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+        pose = create_head_pose(
+            0,
+            0,
+            0,
+            roll_deg * (0.8 + 0.4 * g),
+            pitch_deg * (0.9 + 0.4 * g),
+            yaw_deg * (0.8 + 0.4 * g),
+            degrees=True,
+        )
+        ant_amp = min(0.10 + 0.18 * g, 0.28)
+        ant = [
+            (0.0, (0.0, 0.0)),
+            (0.5, (-ant_amp + 0.25 * yaw_deg / 7.5, ant_amp + 0.25 * yaw_deg / 7.5)),
+            (1.0, (0.0, 0.0)),
+        ]
+        move = _LinearMove([(0.0, center), (0.5, pose), (1.0, center)], ant)
+        return self._call_if_exists(
+            [
+                (self._client, "async_play_move", (move,)),
+                (self._client, "play_move", (move,)),
+            ]
+        )
 
     def _gesture_cycle_sec(self, preset: str) -> float:
         if preset == "nod":

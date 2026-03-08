@@ -71,7 +71,11 @@ class ReachyAdapterTest(unittest.IsolatedAsyncioTestCase):
     async def test_gesture_best_effort(self) -> None:
         client = _FakeClient()
         adapter = ReachySdkAdapter(
-            host="127.0.0.1", tts_engine="espeak-ng", gesture_enabled=True, client=client
+            host="127.0.0.1",
+            tts_engine="espeak-ng",
+            gesture_enabled=True,
+            speech_motion_enabled=False,
+            client=client,
         )
         adapter._synthesize_to_wav = lambda text: "/tmp/fake.wav"  # type: ignore[method-assign]
         adapter._cleanup_temp_wav = lambda path: None  # type: ignore[method-assign]
