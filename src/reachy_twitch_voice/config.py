@@ -30,6 +30,13 @@ class RuntimeConfig:
 
 
 @dataclass(slots=True)
+class WebConsoleConfig:
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 7860
+
+
+@dataclass(slots=True)
 class ReachyConfig:
     tts_engine: str = "espeak-ng"
     tts_lang: str = "ja"
@@ -62,9 +69,12 @@ class ConversationConfig:
     operator_name: str = "にかなとむ(tom_t100ta)"
     persona_style: str = "親しみを保ちつつ、常に適度に礼儀正しく"
     system_prompt_file: str = ""
+    system_prompt_text: str = ""
     operator_usernames: list[str] = field(
         default_factory=lambda: ["tom_t100ta", "にかなとむ"]
     )
+    profile_storage_dir: str = "~/.config/reachy-mini-twitch-voice/profiles"
+    active_profile: str = ""
 
 
 @dataclass(slots=True)
@@ -74,6 +84,7 @@ class PipelineConfig:
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     reachy: ReachyConfig = field(default_factory=ReachyConfig)
     conversation: ConversationConfig = field(default_factory=ConversationConfig)
+    web_console: WebConsoleConfig = field(default_factory=WebConsoleConfig)
 
 
 def _as_bool(value: str, default: bool = True) -> bool:
@@ -171,11 +182,22 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
         or "親しみを保ちつつ、常に適度に礼儀正しく"
     )
     system_prompt_file = os.getenv("SYSTEM_PROMPT_FILE", "").strip()
+    profile_storage_dir = (
+        os.getenv(
+            "PROFILE_STORAGE_DIR",
+            "~/.config/reachy-mini-twitch-voice/profiles",
+        ).strip()
+        or "~/.config/reachy-mini-twitch-voice/profiles"
+    )
+    active_profile = os.getenv("ACTIVE_PROFILE", "").strip()
     operator_usernames = [
         u.strip().lower()
         for u in os.getenv("OPERATOR_USERNAMES", "tom_t100ta,にかなとむ").split(",")
         if u.strip()
     ]
+    web_console_enabled = _as_bool(os.getenv("WEB_CONSOLE_ENABLED", "true"), True)
+    web_console_host = os.getenv("WEB_CONSOLE_HOST", "0.0.0.0").strip() or "0.0.0.0"
+    web_console_port = int(os.getenv("WEB_CONSOLE_PORT", "7860"))
 
     return PipelineConfig(
         twitch=TwitchConfig(channel=channel, oauth_token=token, nick=nick),
@@ -223,6 +245,14 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
             operator_name=operator_name,
             persona_style=persona_style,
             system_prompt_file=system_prompt_file,
+            system_prompt_text="",
             operator_usernames=operator_usernames or ["tom_t100ta", "にかなとむ"],
+            profile_storage_dir=profile_storage_dir,
+            active_profile=active_profile,
+        ),
+        web_console=WebConsoleConfig(
+            enabled=web_console_enabled,
+            host=web_console_host,
+            port=web_console_port,
         ),
     )

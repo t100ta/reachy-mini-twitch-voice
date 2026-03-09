@@ -10,7 +10,8 @@ def load_env_file(path: str, overwrite: bool = False) -> bool:
     """
     import os
 
-    p = Path(path)
+    expanded = os.path.expandvars(os.path.expanduser(path))
+    p = Path(expanded)
     if not p.exists() or not p.is_file():
         return False
 

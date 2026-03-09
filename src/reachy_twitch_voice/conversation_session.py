@@ -21,12 +21,19 @@ class ConversationSession(Protocol):
     async def generate(self, event: ConversationInputEvent) -> ConversationOutputEvent:
         ...
 
+    async def reload_config(self, cfg: ConversationConfig) -> None:
+        ...
+
 
 class _OpenAISessionBase:
     def __init__(self, cfg: ConversationConfig, safety_cfg: SafetyConfig) -> None:
         self.cfg = cfg
         self.safety_cfg = safety_cfg
         self.turns: list[ConversationTurn] = []
+        self.system_prompt = self._load_system_prompt()
+
+    async def reload_config(self, cfg: ConversationConfig) -> None:
+        self.cfg = cfg
         self.system_prompt = self._load_system_prompt()
 
     def _build_prompt(self, event: ConversationInputEvent, history_text: str) -> str:
@@ -53,19 +60,22 @@ class _OpenAISessionBase:
             "不適切・危険・個人情報要求は避けること。"
             "\\n[rule] もし user が Operator なら、Operator と認識したうえで丁寧に応答する。"
         )
-        path = self.cfg.system_prompt_file.strip()
-        if path:
-            try:
-                template = Path(path).read_text(encoding="utf-8")
-            except OSError as exc:
-                LOGGER.warning(
-                    "Failed to read SYSTEM_PROMPT_FILE=%s; fallback to packaged prompt: %s",
-                    path,
-                    exc,
-                )
-                template = self._read_packaged_prompt_or_default(template)
+        if self.cfg.system_prompt_text.strip():
+            template = self.cfg.system_prompt_text
         else:
-            template = self._read_packaged_prompt_or_default(template)
+            path = self.cfg.system_prompt_file.strip()
+            if path:
+                try:
+                    template = Path(path).read_text(encoding="utf-8")
+                except OSError as exc:
+                    LOGGER.warning(
+                        "Failed to read SYSTEM_PROMPT_FILE=%s; fallback to packaged prompt: %s",
+                        path,
+                        exc,
+                    )
+                    template = self._read_packaged_prompt_or_default(template)
+            else:
+                template = self._read_packaged_prompt_or_default(template)
         return (
             template.replace("{{PERSONA_NAME}}", self.cfg.persona_name)
             .replace("{{PERSONA_NAME_KANA}}", self.cfg.persona_name_kana)

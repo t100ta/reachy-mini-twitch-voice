@@ -100,6 +100,22 @@ class SessionFallbackTest(unittest.TestCase):
         self.assertIn("op=operator-x", prompt)
         self.assertIn("style=ていねい", prompt)
 
+    def test_reload_config_rebuilds_prompt(self) -> None:
+        cfg = ConversationConfig(openai_api_key="", context_window_size=30)
+        sess = OpenAIRealtimeSession(cfg, SafetyConfig())
+        new_cfg = ConversationConfig(
+            openai_api_key="",
+            context_window_size=30,
+            persona_name="Reloaded",
+            system_prompt_text="name={{PERSONA_NAME}}",
+        )
+        asyncio.run(sess.reload_config(new_cfg))
+        ev = ConversationInputEvent(
+            message_id="m4", user_name="alice", channel="chan", text="hello", received_at=1.0
+        )
+        prompt = sess._build_prompt(ev, "")
+        self.assertIn("name=Reloaded", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

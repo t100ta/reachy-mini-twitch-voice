@@ -1,14 +1,17 @@
 __all__ = [
     "config",
     "main",
+    "movement_manager",
     "normalizer",
     "conversation_session",
     "input_adapter",
     "orchestrator",
     "reachy_adapter",
+    "profile_store",
     "safety",
     "tool_executor",
     "twitch_irc",
     "twitch_parser",
     "types",
+    "web_console",
 ]

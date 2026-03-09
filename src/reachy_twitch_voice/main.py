@@ -9,8 +9,10 @@ from pathlib import Path
 from .config import RuntimeConfig, load_config_from_env
 from .dotenv_loader import load_env_file
 from .orchestrator import AppDeps, AppOrchestrator
+from .profile_store import ProfileStore
 from .reachy_adapter import MockReachyAdapter, ReachyMiniAdapter
 from .twitch_irc import TwitchIrcClient
+from .web_console import WebConsoleServer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -73,6 +75,13 @@ def _log_stats(app: AppOrchestrator) -> None:
 
 async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> None:
     cfg = load_config_from_env(allow_dummy_twitch=bool(replay_file))
+    profile_store = ProfileStore(cfg.conversation.profile_storage_dir, cfg.conversation)
+    active_profile = profile_store.resolve_active_profile_name(cfg.conversation.active_profile)
+    if active_profile and active_profile in profile_store.list_profiles():
+        cfg.conversation = profile_store.apply_profile_to_config(
+            cfg.conversation,
+            profile_store.load_profile(active_profile),
+        )
     q: asyncio.Queue[str] = asyncio.Queue()
 
     if use_mock:
@@ -118,6 +127,7 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
 
     deps = AppDeps(cfg=cfg, adapter=adapter, irc_messages=q)
     app = AppOrchestrator(deps)
+    console: WebConsoleServer | None = None
 
     if replay_file:
         await _replay_file_to_queue(Path(replay_file), q, cfg.runtime, app)
@@ -127,6 +137,16 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
         _log_stats(app)
         return
 
+    if cfg.web_console.enabled:
+        console = WebConsoleServer(
+            app=app,
+            store=profile_store,
+            loop=asyncio.get_running_loop(),
+            host=cfg.web_console.host,
+            port=cfg.web_console.port,
+        )
+        console.start()
+
     irc = TwitchIrcClient(
         nick=cfg.twitch.nick,
         oauth_token=cfg.twitch.oauth_token,
@@ -135,15 +155,31 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
     producer = asyncio.create_task(_forward_irc_to_queue(irc, q, cfg.runtime, app))
     consumer = asyncio.create_task(app.run())
 
-    done, pending = await asyncio.wait(
-        {producer, consumer}, return_when=asyncio.FIRST_EXCEPTION
-    )
-    for p in pending:
-        p.cancel()
-    for d in done:
-        if err := d.exception():
-            raise err
-    _log_stats(app)
+    try:
+        done, pending = await asyncio.wait(
+            {producer, consumer}, return_when=asyncio.FIRST_EXCEPTION
+        )
+        for p in pending:
+            p.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for d in done:
+            if d.cancelled():
+                continue
+            if err := d.exception():
+                raise err
+        _log_stats(app)
+    except asyncio.CancelledError:
+        LOGGER.info("Application shutdown requested")
+    finally:
+        producer.cancel()
+        consumer.cancel()
+        await asyncio.gather(producer, consumer, return_exceptions=True)
+        stop = getattr(adapter, "stop", None)
+        if callable(stop):
+            await stop()
+        if console is not None:
+            console.stop()
 
 
 def main() -> None:
@@ -169,6 +205,11 @@ def main() -> None:
         default=None,
         help="Path to text file containing raw IRC lines for local replay",
     )
+    parser.add_argument(
+        "--no-web-console",
+        action="store_true",
+        help="Disable the Gradio web console even if WEB_CONSOLE_ENABLED=true",
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
@@ -181,14 +222,21 @@ def main() -> None:
         loaded = load_env_file(args.env_file)
         if loaded:
             LOGGER.info("Loaded env file: %s", args.env_file)
+        else:
+            LOGGER.warning("Env file was not loaded: %s", args.env_file)
+    if args.no_web_console:
+        os.environ["WEB_CONSOLE_ENABLED"] = "false"
 
-    asyncio.run(
-        run_app(
-            use_mock=args.mock,
-            reachy_host=args.reachy_host,
-            replay_file=args.replay_file,
+    try:
+        asyncio.run(
+            run_app(
+                use_mock=args.mock,
+                reachy_host=args.reachy_host,
+                replay_file=args.replay_file,
+            )
         )
-    )
+    except KeyboardInterrupt:
+        LOGGER.info("Shutting down")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ import logging
 import time
 from dataclasses import dataclass
 
-from .config import PipelineConfig
+from .config import ConversationConfig, PipelineConfig
 from .conversation_session import FALLBACK_REPLY, ConversationSession, create_conversation_session
 from .input_adapter import RealtimeInputAdapter
 from .normalizer import normalize_comment
@@ -40,6 +40,11 @@ class AppOrchestrator:
         )
         self.tool_executor = deps.tool_executor or ToolExecutor()
         self.operator_usernames = set(deps.cfg.conversation.operator_usernames)
+
+    async def reload_conversation_config(self, cfg: ConversationConfig) -> None:
+        self.deps.cfg.conversation = cfg
+        self.operator_usernames = set(cfg.operator_usernames)
+        await self.conversation.reload_config(cfg)
 
     async def consume_once(self, raw: str) -> None:
         msg = parse_privmsg(raw)
@@ -120,5 +125,5 @@ class AppOrchestrator:
     def _speech_deadline_ms(self, text: str) -> int:
         base = self.deps.cfg.runtime.message_timeout_ms
         # Approximate JP speech duration + safety margin.
-        estimated = int((max(len(text), 1) / 7.0) * 1000) + 3000
-        return min(max(base, estimated), 30000)
+        estimated = int((max(len(text), 1) / 6.0) * 1000) + 7000
+        return min(max(base, estimated), 45000)

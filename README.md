@@ -13,6 +13,7 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - FIFO（到着順）での発話処理
 - 発話タイムアウトによる詰まり回避
 - Reachy SDKアダプタとMockアダプタの切替
+- GradioベースのWebコンソールで人格/プロンプトを保存・即時反映
 
 ## Environment Variables
 
@@ -31,6 +32,8 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - `PERSONA_STYLE` (optional, default: `親しみを保ちつつ、常に適度に礼儀正しく`)
 - `SYSTEM_PROMPT_FILE` (optional, default: empty = `src/reachy_twitch_voice/prompts/system_ja.txt`)
 - `OPERATOR_USERNAMES` (optional, default: `tom_t100ta,にかなとむ`)
+- `PROFILE_STORAGE_DIR` (optional, default: `~/.config/reachy-mini-twitch-voice/profiles`)
+- `ACTIVE_PROFILE` (optional, default: empty = 保存済みアクティブプロフィールを優先)
 - `NG_WORDS` (optional, comma-separated)
 - `MAX_CHARS` (optional, default: `140`)
 - `SPAM_WINDOW_SEC` (optional, default: `5`)
@@ -59,6 +62,9 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - `REACHY_CONNECT_RETRIES` (optional, default: `3`)
 - `REACHY_CONNECT_RETRY_INTERVAL_SEC` (optional, default: `3.0`)
 - `IDLE_USE_DOA` (optional, default: `false`)
+- `WEB_CONSOLE_ENABLED` (optional, default: `true`)
+- `WEB_CONSOLE_HOST` (optional, default: `0.0.0.0`)
+- `WEB_CONSOLE_PORT` (optional, default: `7860`)
 
 ## Local Env File
 
@@ -75,6 +81,7 @@ cp .env.local.example .env.local
 - キャラクター設定は `.env.local` の `PERSONA_*` と `OPERATOR_NAME` で切り替え可能
 - 既定のsystem promptは `src/reachy_twitch_voice/prompts/system_ja.txt` を使用
 - カスタムpromptを使う場合のみ `SYSTEM_PROMPT_FILE` を指定（テンプレート変数: `{{PERSONA_NAME}}`, `{{PERSONA_NAME_KANA}}`, `{{OPERATOR_NAME}}`, `{{PERSONA_STYLE}}`）
+- Webコンソールで保存したプロフィールは `PROFILE_STORAGE_DIR` 以下に保存される
 
 ## 再インストール/再同期時の注意
 
@@ -183,6 +190,14 @@ cp .env.local.example .env.local
 PYTHONPATH=src python3 -m reachy_twitch_voice.main
 ```
 
+Webコンソールを止めたい場合:
+
+```bash
+PYTHONPATH=src python3 -m reachy_twitch_voice.main --no-web-console
+```
+
+既定では `http://<HOST>:7860` でGradio UIが起動します。無認証なので、同一LAN内だけで利用してください。
+
 ## Twitch Token (Official Device Flow)
 
 `twitchapps.com/tmi` は利用せず、Twitch公式 Device Code Flow を使用します。
@@ -223,6 +238,7 @@ curl -s -H "Authorization: OAuth ${TOKEN}" https://id.twitch.tv/oauth2/validate
 
 - 入力は Twitch チャットのみ（マイク入力は無効）
 - `CONVERSATION_ENGINE=realtime` は Realtimeスタイルの直列処理（active response競合回避）で動作
+- Webコンソールでプロフィールを保存し、`Apply`すると次の会話入力から新しい人格/プロンプトが反映される
 - 返答は全コメント対象
 - 直近30コメントを文脈として話題を膨らませる
 - 感情ラベル（`joy` / `surprise` / `empathy`）を同時生成し、動作へ同期
