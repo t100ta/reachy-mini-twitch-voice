@@ -105,6 +105,7 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
             connect_retries=cfg.reachy.connect_retries,
             connect_retry_interval_sec=cfg.reachy.connect_retry_interval_sec,
             idle_use_doa=cfg.reachy.idle_use_doa,
+            idle_inactivity_delay_sec=cfg.runtime.idle_interval_sec,
         )
         await sdk.connect()
         adapter = sdk
