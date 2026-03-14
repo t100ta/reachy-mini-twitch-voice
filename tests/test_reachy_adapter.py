@@ -1,3 +1,8 @@
+import io
+import os
+import tempfile
+import time
+import wave
 import unittest
 from unittest.mock import patch
 
@@ -118,6 +123,76 @@ class ReachyAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(RuntimeError):
             await adapter.speak(task)
+
+    def test_openai_tts_wav_is_normalized_for_playback(self) -> None:
+        adapter = ReachySdkAdapter(
+            host="127.0.0.1",
+            tts_engine="openai-tts",
+            openai_api_key="sk-test",
+        )
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(24000)
+            w.writeframes(b"\x00\x00\x10\x00" * 2400)
+
+        adapter._request_openai_tts = lambda payload: buf.getvalue()  # type: ignore[method-assign]
+        wav_path = adapter._synthesize_with_openai_tts("hello")
+        try:
+            with wave.open(wav_path, "rb") as w:
+                self.assertEqual(w.getnchannels(), 1)
+                self.assertEqual(w.getsampwidth(), 2)
+                self.assertEqual(w.getframerate(), 16000)
+                self.assertGreater(w.getnframes(), 0)
+        finally:
+            adapter._cleanup_temp_wav(wav_path)
+
+    def test_wav_duration_sec_reads_frames(self) -> None:
+        adapter = ReachySdkAdapter(host="127.0.0.1")
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            wav_path = f.name
+        try:
+            with wave.open(wav_path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(b"\x00\x00" * 8000)
+            self.assertAlmostEqual(adapter._wav_duration_sec(wav_path), 0.5, places=2)
+        finally:
+            if os.path.exists(wav_path):
+                os.unlink(wav_path)
+
+    async def test_speak_waits_for_wav_duration(self) -> None:
+        client = _FakeClient()
+        adapter = ReachySdkAdapter(
+            host="127.0.0.1", tts_engine="espeak-ng", gesture_enabled=False, client=client
+        )
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            wav_path = f.name
+        try:
+            with wave.open(wav_path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(b"\x00\x00" * 1600)
+            adapter._synthesize_to_wav = lambda text: wav_path  # type: ignore[method-assign]
+            adapter._cleanup_temp_wav = lambda path: None  # type: ignore[method-assign]
+            task = SpeechTask(
+                message_id="m2",
+                text_ja="hello",
+                voice_style="default",
+                gesture_preset="nod",
+                deadline_ms=1000,
+            )
+            started = time.monotonic()
+            await adapter.speak(task)
+            elapsed = time.monotonic() - started
+            self.assertGreaterEqual(elapsed, 0.09)
+        finally:
+            if os.path.exists(wav_path):
+                os.unlink(wav_path)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import audioop
 import asyncio
 import json
 import logging
@@ -13,6 +14,7 @@ import urllib.error
 import urllib.request
 import wave
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 from .movement_manager import MovementManager, build_gesture_move
@@ -226,7 +228,9 @@ class ReachySdkAdapter(ReachyAdapter):
                             task.motion_plan.speech_motion_scale,
                         )
                     )
-            await asyncio.to_thread(self._play_sound, wav_path)
+            playback_duration = await asyncio.to_thread(self._play_sound, wav_path)
+            if playback_duration > 0.0:
+                await asyncio.sleep(playback_duration)
         finally:
             speech_motion_stop.set()
             if speech_motion_task is not None:
@@ -472,6 +476,7 @@ class ReachySdkAdapter(ReachyAdapter):
         if not os.path.exists(wav_path) or os.path.getsize(wav_path) == 0:
             self._cleanup_temp_wav(wav_path)
             raise RuntimeError("OpenAI TTS did not return a valid wav file")
+        self._normalize_wav_for_playback(wav_path)
         return wav_path
 
     def _request_openai_tts(self, payload: dict[str, Any]) -> bytes:
@@ -487,11 +492,55 @@ class ReachySdkAdapter(ReachyAdapter):
         with urllib.request.urlopen(req, timeout=20.0) as resp:
             return resp.read()
 
-    def _play_sound(self, wav_path: str) -> None:
+    def _play_sound(self, wav_path: str) -> float:
         media = getattr(self._client, "media", None)
         if media is None or not hasattr(media, "play_sound"):
             raise RuntimeError("ReachyMini.media.play_sound is not available")
         media.play_sound(wav_path)
+        return self._wav_duration_sec(wav_path)
+
+    def _wav_duration_sec(self, wav_path: str) -> float:
+        try:
+            with wave.open(wav_path, "rb") as wav_file:
+                frame_rate = max(wav_file.getframerate(), 1)
+                frame_count = wav_file.getnframes()
+                duration = frame_count / frame_rate
+        except Exception:
+            return 0.0
+        return max(duration, 0.0)
+
+    def _normalize_wav_for_playback(self, wav_path: str) -> None:
+        try:
+            with wave.open(wav_path, "rb") as src:
+                channels = max(src.getnchannels(), 1)
+                sample_width = src.getsampwidth()
+                frame_rate = max(src.getframerate(), 1)
+                frames = src.readframes(src.getnframes())
+        except Exception as exc:
+            raise RuntimeError(f"OpenAI TTS returned an unreadable wav file: {exc}") from exc
+
+        if sample_width not in {1, 2, 4}:
+            raise RuntimeError(
+                f"OpenAI TTS returned unsupported wav sample width: {sample_width}"
+            )
+
+        converted = frames
+        width = sample_width
+        if channels > 1:
+            converted = audioop.tomono(converted, width, 0.5, 0.5)
+            channels = 1
+        if width != 2:
+            converted = audioop.lin2lin(converted, width, 2)
+            width = 2
+        if frame_rate != 16000:
+            converted, _ = audioop.ratecv(converted, width, channels, frame_rate, 16000, None)
+            frame_rate = 16000
+
+        with wave.open(wav_path, "wb") as dst:
+            dst.setnchannels(channels)
+            dst.setsampwidth(width)
+            dst.setframerate(frame_rate)
+            dst.writeframes(converted)
 
     async def _run_speech_motion_loop(
         self,
