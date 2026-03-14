@@ -106,6 +106,12 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
             connect_retry_interval_sec=cfg.reachy.connect_retry_interval_sec,
             idle_use_doa=cfg.reachy.idle_use_doa,
             idle_inactivity_delay_sec=cfg.runtime.idle_interval_sec,
+            motion_style=cfg.reachy.motion_style,
+            idle_style=cfg.reachy.idle_style,
+            idle_first_delay_sec=cfg.reachy.idle_first_delay_sec,
+            idle_glance_interval_sec=cfg.reachy.idle_glance_interval_sec,
+            speech_motion_scale=cfg.reachy.speech_motion_scale,
+            emotion_motion_enabled=cfg.reachy.emotion_motion_enabled,
         )
         await sdk.connect()
         adapter = sdk

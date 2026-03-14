@@ -81,6 +81,12 @@ class ReachySdkAdapter(ReachyAdapter):
         connect_retry_interval_sec: float = 3.0,
         idle_use_doa: bool = False,
         idle_inactivity_delay_sec: float = 0.3,
+        motion_style: str = "official",
+        idle_style: str = "attentive",
+        idle_first_delay_sec: float = 3.0,
+        idle_glance_interval_sec: float = 10.0,
+        speech_motion_scale: float = 0.65,
+        emotion_motion_enabled: bool = True,
         client: Any | None = None,
     ) -> None:
         self.host = host
@@ -101,11 +107,19 @@ class ReachySdkAdapter(ReachyAdapter):
         self.connect_retry_interval_sec = max(0.1, connect_retry_interval_sec)
         self.idle_use_doa = idle_use_doa
         self.idle_inactivity_delay_sec = max(0.0, idle_inactivity_delay_sec)
+        self.motion_style = motion_style
+        self.idle_style = idle_style
+        self.idle_first_delay_sec = max(0.0, idle_first_delay_sec)
+        self.idle_glance_interval_sec = max(1.0, idle_glance_interval_sec)
+        self.speech_motion_scale = min(max(speech_motion_scale, 0.1), 1.5)
+        self.emotion_motion_enabled = emotion_motion_enabled
         self._rng = random.Random(time.time_ns())
         self._last_speech_end = 0.0
         self._ready = False
         self._client = client
         self._motion_manager: MovementManager | None = None
+        self._emotion_moves: Any | None = None
+        self._dance_move_cls: Any | None = None
         if client is not None:
             self._ready = True
 
@@ -193,15 +207,24 @@ class ReachySdkAdapter(ReachyAdapter):
         manager = self._ensure_motion_manager_started()
         try:
             if manager is not None:
+                manager.set_idle_phrase_candidates(task.motion_plan.idle_phrase_candidates)
                 manager.mark_activity()
                 manager.set_speaking(True)
-                if self.gesture_enabled:
+                opening_move = self._resolve_opening_move(task)
+                if opening_move is not None:
+                    manager.queue_move(opening_move)
+                elif self.gesture_enabled:
                     move = build_gesture_move(task.gesture_preset, self._rng)
                     if move is not None:
                         manager.queue_move(move)
                 if self.speech_motion_enabled:
                     speech_motion_task = asyncio.create_task(
-                        self._run_speech_motion_loop(wav_path, task.gesture_preset, speech_motion_stop)
+                        self._run_speech_motion_loop(
+                            wav_path,
+                            task.gesture_preset,
+                            speech_motion_stop,
+                            task.motion_plan.speech_motion_scale,
+                        )
                     )
             await asyncio.to_thread(self._play_sound, wav_path)
         finally:
@@ -209,6 +232,9 @@ class ReachySdkAdapter(ReachyAdapter):
             if speech_motion_task is not None:
                 await speech_motion_task
             if manager is not None:
+                settle_move = self._resolve_settle_move(task)
+                if settle_move is not None:
+                    manager.queue_move(settle_move)
                 manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
                 manager.mark_activity()
                 manager.set_speaking(False)
@@ -267,7 +293,7 @@ class ReachySdkAdapter(ReachyAdapter):
         if self.idle_use_doa:
             if await asyncio.to_thread(self._idle_look_with_doa, manager):
                 return
-        # MovementManager itself enters breathing after the configured inactivity delay.
+        manager.set_idle_phrase_candidates(["look", "nod"] if self.idle_style == "attentive" else ["nod", "tilt"])
         await asyncio.sleep(0)
 
     def _idle_look_with_doa(self, manager: MovementManager) -> bool:
@@ -284,6 +310,9 @@ class ReachySdkAdapter(ReachyAdapter):
         if not speech_detected:
             return False
         move = build_gesture_move("look", self._rng, antenna_scale=0.25, motion_scale=0.5)
+        official = self._resolve_gesture_fallback("look", antenna_scale=0.25, motion_scale=0.5)
+        if official is not None:
+            move = official
         if move is None:
             return False
         manager.mark_activity()
@@ -298,9 +327,86 @@ class ReachySdkAdapter(ReachyAdapter):
             self._motion_manager = MovementManager(
                 self._client,
                 idle_inactivity_delay=self.idle_inactivity_delay_sec,
+                idle_style=self.idle_style,
+                idle_first_delay=self.idle_first_delay_sec,
+                idle_glance_interval=self.idle_glance_interval_sec,
             )
             self._motion_manager.start()
         return self._motion_manager
+
+    def _load_motion_libraries(self) -> None:
+        if self.motion_style != "official":
+            return
+        if self._emotion_moves is None:
+            try:
+                from reachy_mini.motion.recorded_move import RecordedMoves  # type: ignore
+
+                self._emotion_moves = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")
+            except Exception as exc:
+                LOGGER.warning("Emotion moves unavailable, falling back to legacy gestures: %s", exc)
+                self._emotion_moves = False
+        if self._dance_move_cls is None:
+            try:
+                from reachy_mini_dances_library.dance_move import DanceMove  # type: ignore
+
+                self._dance_move_cls = DanceMove
+            except Exception as exc:
+                LOGGER.warning("Dance moves unavailable, continuing without dance support: %s", exc)
+                self._dance_move_cls = False
+
+    def _resolve_emotion_move(self, emotion_name: str | None) -> Any | None:
+        if not emotion_name or not self.emotion_motion_enabled:
+            return None
+        self._load_motion_libraries()
+        if not self._emotion_moves or self._emotion_moves is False:
+            return None
+        candidates = [emotion_name]
+        alias_map = {
+            "happy": ["happy", "joy", "celebration"],
+            "celebration": ["celebration", "happy", "joy"],
+            "surprised": ["surprised", "surprise", "curious"],
+            "agree": ["agree", "listening", "empathy"],
+            "listening": ["listening", "agree", "empathy"],
+            "settle": ["settle", "calm", "neutral"],
+        }
+        candidates = alias_map.get(emotion_name, [emotion_name])
+        for candidate in candidates:
+            try:
+                return self._emotion_moves.get(candidate)
+            except Exception:
+                continue
+        return None
+
+    def _resolve_dance_move(self, move_name: str | None) -> Any | None:
+        if not move_name:
+            return None
+        self._load_motion_libraries()
+        if not self._dance_move_cls or self._dance_move_cls is False:
+            return None
+        try:
+            return self._dance_move_cls(move_name)
+        except Exception:
+            return None
+
+    def _resolve_gesture_fallback(self, preset: str, *, antenna_scale: float = 1.0, motion_scale: float = 1.0) -> Any | None:
+        return build_gesture_move(preset, self._rng, antenna_scale=antenna_scale, motion_scale=motion_scale)
+
+    def _resolve_opening_move(self, task: SpeechTask) -> Any | None:
+        move = self._resolve_emotion_move(task.motion_plan.speech_opening_emotion)
+        if move is not None:
+            return move
+        dance_move = self._resolve_dance_move(task.motion_plan.dance_move)
+        if dance_move is not None:
+            return dance_move
+        if self.gesture_enabled:
+            return self._resolve_gesture_fallback(task.motion_plan.fallback_gesture)
+        return None
+
+    def _resolve_settle_move(self, task: SpeechTask) -> Any | None:
+        move = self._resolve_emotion_move(task.motion_plan.post_speech_settle)
+        if move is not None:
+            return move
+        return self._resolve_gesture_fallback("idle", antenna_scale=0.3, motion_scale=0.5)
 
     def _supports_motion_control(self) -> bool:
         if self._client is None:
@@ -392,6 +498,7 @@ class ReachySdkAdapter(ReachyAdapter):
         wav_path: str,
         base_preset: str,
         stop_event: asyncio.Event,
+        motion_scale: float,
     ) -> None:
         frames = self._extract_sway_frames_from_wav(wav_path)
         if not frames:
@@ -422,10 +529,11 @@ class ReachySdkAdapter(ReachyAdapter):
                 smooth_yaw,
                 smooth_roll,
                 smooth_gain,
+                motion_scale,
             )
-            await asyncio.sleep(0.14)
+            await asyncio.sleep(0.18)
             idx += 3
-        await asyncio.to_thread(self._apply_speech_frame, 0.0, 0.0, 0.0, 0.0)
+        await asyncio.to_thread(self._apply_speech_frame, 0.0, 0.0, 0.0, 0.0, motion_scale)
 
     def _extract_sway_frames_from_wav(self, wav_path: str) -> list[dict[str, float]]:
         try:
@@ -446,14 +554,16 @@ class ReachySdkAdapter(ReachyAdapter):
         yaw_deg: float,
         roll_deg: float,
         gain: float,
+        motion_scale: float,
     ) -> bool:
         manager = self._motion_manager
         if manager is None:
             return False
         g = min(max(gain, 0.0), 1.0)
-        roll_rad = math.radians(roll_deg * (1.2 + 0.4 * g))
-        pitch_rad = math.radians(pitch_deg * (1.2 + 0.5 * g))
-        yaw_rad = math.radians(yaw_deg * (1.0 + 0.4 * g))
+        scale = min(max(self.speech_motion_scale * motion_scale, 0.1), 1.5)
+        roll_rad = math.radians(roll_deg * (0.8 + 0.2 * g) * scale)
+        pitch_rad = math.radians(pitch_deg * (0.85 + 0.25 * g) * scale)
+        yaw_rad = math.radians(yaw_deg * (0.7 + 0.2 * g) * scale)
         manager.set_speech_offsets((0.0, 0.0, 0.0, roll_rad, pitch_rad, yaw_rad))
         return True
 

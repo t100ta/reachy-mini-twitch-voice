@@ -5,7 +5,11 @@ description = "Reachy Mini Twitch chat voice interaction app"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 authors = [{ name = "tom_t100ta" }]
-dependencies = ["gradio>=5.0,<6"]
+dependencies = [
+    "gradio>=5.0,<6",
+    "reachy-mini>=1.5.0",
+    "reachy-mini-dances-library>=0.1.0",
+]
 
 [project.optional-dependencies]
 dev = ["ruff>=0.6,<1", "mypy>=1.10,<2"]

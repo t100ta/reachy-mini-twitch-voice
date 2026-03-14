@@ -156,6 +156,67 @@ class OrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapter.spoken, [])
         self.assertEqual(orch.stats.dropped, 1)
 
+    async def test_manual_mode_ignores_twitch_input(self) -> None:
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            runtime=RuntimeConfig(message_timeout_ms=1000, reconnect_max_sec=30),
+            conversation=ConversationConfig(input_mode="manual_text"),
+        )
+        adapter = MockReachyAdapter()
+        deps = AppDeps(cfg=cfg, adapter=adapter, irc_messages=asyncio.Queue())
+        orch = AppOrchestrator(deps)
+
+        raw = ":alice!alice@alice.tmi.twitch.tv PRIVMSG #chan :hello"
+        await orch.consume_once(raw)
+
+        self.assertEqual(adapter.spoken, [])
+        self.assertEqual(orch.stats.processed, 0)
+
+    async def test_consume_manual_text_speaks(self) -> None:
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            runtime=RuntimeConfig(message_timeout_ms=1000, reconnect_max_sec=30),
+        )
+        adapter = MockReachyAdapter()
+        convo = _CaptureConversation()
+        deps = AppDeps(
+            cfg=cfg,
+            adapter=adapter,
+            irc_messages=asyncio.Queue(),
+            conversation=convo,  # type: ignore[arg-type]
+        )
+        orch = AppOrchestrator(deps)
+
+        await orch.set_input_mode("manual_text")
+        await orch.consume_manual_text("manual hello", user_name="tester")
+
+        self.assertEqual(len(adapter.spoken), 1)
+        self.assertIsNotNone(convo.last_event)
+        self.assertEqual(convo.last_event.source, "manual")
+        self.assertEqual(convo.last_event.channel, "manual")
+        self.assertEqual(convo.last_event.user_name, "tester")
+
+    async def test_manual_text_operator_detection(self) -> None:
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            runtime=RuntimeConfig(message_timeout_ms=1000, reconnect_max_sec=30),
+            conversation=ConversationConfig(operator_usernames=["manual_tester"]),
+        )
+        adapter = MockReachyAdapter()
+        convo = _CaptureConversation()
+        deps = AppDeps(
+            cfg=cfg,
+            adapter=adapter,
+            irc_messages=asyncio.Queue(),
+            conversation=convo,  # type: ignore[arg-type]
+        )
+        orch = AppOrchestrator(deps)
+
+        await orch.consume_manual_text("hello", user_name="manual_tester")
+
+        self.assertIsNotNone(convo.last_event)
+        self.assertTrue(convo.last_event.is_operator)
+
 
 if __name__ == "__main__":
     unittest.main()

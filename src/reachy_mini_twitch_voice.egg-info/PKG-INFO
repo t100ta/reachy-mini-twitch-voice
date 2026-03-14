@@ -26,6 +26,7 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - 発話タイムアウトによる詰まり回避
 - Reachy SDKアダプタとMockアダプタの切替
 - GradioベースのWebコンソールで人格/プロンプトを保存・即時反映
+- Webコンソールから入力参照モードを `twitch` / `manual_text` で即時切替
 
 ## Environment Variables
 
@@ -35,7 +36,7 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - `OPENAI_API_KEY` (required)
 - `OPENAI_REALTIME_MODEL` (optional, default: `gpt-4o-mini`)
 - `CONVERSATION_ENGINE` (optional, default: `realtime`, values: `realtime|http`)
-- `CONVERSATION_INPUT_MODE` (optional, default: `twitch`)
+- `CONVERSATION_INPUT_MODE` (optional, default: `twitch`, startup mode: `twitch|manual_text`)
 - `TWITCH_MESSAGE_CONTEXT_WINDOW` (optional, default: `30`)
 - `OPENAI_TIMEOUT_SEC` (optional, default: `10.0`)
 - `PERSONA_NAME` (optional, default: `NUVA`)
@@ -74,26 +75,35 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - `REACHY_CONNECT_RETRIES` (optional, default: `3`)
 - `REACHY_CONNECT_RETRY_INTERVAL_SEC` (optional, default: `3.0`)
 - `IDLE_USE_DOA` (optional, default: `false`)
+- `REACHY_MOTION_STYLE` (optional, default: `official`, values: `official|legacy`)
+- `REACHY_IDLE_STYLE` (optional, default: `attentive`, values: `attentive|calm`)
+- `REACHY_IDLE_FIRST_DELAY_SEC` (optional, default: `3.0`)
+- `REACHY_IDLE_GLANCE_INTERVAL_SEC` (optional, default: `10.0`)
+- `REACHY_SPEECH_MOTION_SCALE` (optional, default: `0.65`)
+- `REACHY_EMOTION_MOTION_ENABLED` (optional, default: `true`)
 - `WEB_CONSOLE_ENABLED` (optional, default: `true`)
 - `WEB_CONSOLE_HOST` (optional, default: `0.0.0.0`)
 - `WEB_CONSOLE_PORT` (optional, default: `7860`)
 
 ## Local Env File
 
-`python -m reachy_twitch_voice.main` はデフォルトで `.env.local` を読み込みます。
-（CLI引数 `--env-file` で変更可能、`--no-env-file` で無効化）
+`python -m reachy_twitch_voice.main` は、起動時のカレントディレクトリにある `.env.local` をデフォルトで読み込みます。
+（CLI引数 `--env-file` で固定パス指定可能、`--no-env-file` で無効化）
 
 ```bash
 cp .env.local.example .env.local
 ```
 
 `.env.local` に Twitch/Reachy の値を設定しておけば、毎回 `export` は不要です。
+ただし Reachy本体ではプロジェクト外の固定パスに置き、`--env-file` で明示指定する運用を推奨します。
 
 補足:
 - キャラクター設定は `.env.local` の `PERSONA_*` と `OPERATOR_NAME` で切り替え可能
 - 既定のsystem promptは `src/reachy_twitch_voice/prompts/system_ja.txt` を使用
 - カスタムpromptを使う場合のみ `SYSTEM_PROMPT_FILE` を指定（テンプレート変数: `{{PERSONA_NAME}}`, `{{PERSONA_NAME_KANA}}`, `{{OPERATOR_NAME}}`, `{{PERSONA_STYLE}}`）
 - Webコンソールで保存したプロフィールは `PROFILE_STORAGE_DIR` 以下に保存される
+- `.env.local.example` の既定値は `REACHY_TTS_ENGINE=openai-tts`
+- OpenAI TTS をまだ使わない疎通確認では、`REACHY_TTS_ENGINE=espeak-ng` に変えると切り分けしやすい
 
 ## 再インストール/再同期時の注意
 
@@ -197,18 +207,31 @@ PYTHONPATH=src python3 -m reachy_twitch_voice.main --mock
 
 ```bash
 cd <PROJECT_DIR>
-cp .env.local.example .env.local
-# .env.local を編集して値を入れる
-PYTHONPATH=src python3 -m reachy_twitch_voice.main
+mkdir -p ~/.config/reachy-mini-twitch-voice
+cp .env.local.example ~/.config/reachy-mini-twitch-voice/.env.local
+# ~/.config/reachy-mini-twitch-voice/.env.local を編集して値を入れる
+PYTHONPATH=src python3 -m reachy_twitch_voice.main \
+  --env-file ~/.config/reachy-mini-twitch-voice/.env.local
 ```
 
 Webコンソールを止めたい場合:
 
 ```bash
-PYTHONPATH=src python3 -m reachy_twitch_voice.main --no-web-console
+PYTHONPATH=src python3 -m reachy_twitch_voice.main \
+  --env-file ~/.config/reachy-mini-twitch-voice/.env.local \
+  --no-web-console
 ```
 
 既定では `http://<HOST>:7860` でGradio UIが起動します。無認証なので、同一LAN内だけで利用してください。
+
+補足:
+- `--env-file` を付けずに起動した場合は、その時点のカレントディレクトリにある `.env.local` だけを読みます
+- 起動ログに `Loaded env file: ...` が出ない場合は `.env.local` が読まれていません
+
+Webコンソールでは入力参照モードを即時切り替えできます。
+
+- `twitch`: 従来どおり Twitch IRC から入ったコメントを処理
+- `manual_text`: Webコンソールで入力した送信者名と本文を疑似チャットとして投入し、通常の会話生成・感情推定・モーション選択・TTS まで通す
 
 ## Twitch Token (Official Device Flow)
 
@@ -248,13 +271,16 @@ curl -s -H "Authorization: OAuth ${TOKEN}" https://id.twitch.tv/oauth2/validate
 
 ## Conversation Behavior
 
-- 入力は Twitch チャットのみ（マイク入力は無効）
+- 入力は Twitch チャットまたは Webコンソールの `manual_text` 疑似チャット入力（マイク入力は無効）
 - `CONVERSATION_ENGINE=realtime` は Realtimeスタイルの直列処理（active response競合回避）で動作
 - Webコンソールでプロフィールを保存し、`Apply`すると次の会話入力から新しい人格/プロンプトが反映される
+- `CONVERSATION_INPUT_MODE` は起動時の初期参照モードで、Webコンソールからランタイム切替できる
 - 返答は全コメント対象
 - 直近30コメントを文脈として話題を膨らませる
 - 感情ラベル（`joy` / `surprise` / `empathy`）を同時生成し、動作へ同期
-- 発話中は conversation app の `speech_tapper` に近いVAD+揺れ生成で、頭部とアンテナを音声レベル追従で動かす
+- `REACHY_MOTION_STYLE=official` では、待機は `attentive -> breathing -> low-frequency phrase` の段階制御で動く
+- 発話開始時は emotion に応じた短い公式モーションを優先し、発話中は縮小した speech overlay を重ねる
+- 発話終了後は短い settle モーションで姿勢を戻し、急停止感を避ける
 - OpenAI呼び出し失敗時は定型文へフォールバックして継続
 - キュー混雑時は `drop_oldest` で古いメッセージを間引きし、遅延崩壊を防ぐ
 - `OPERATOR_USERNAMES` に一致するユーザー発言は「Operator」として扱う

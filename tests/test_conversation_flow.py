@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from reachy_twitch_voice.config import ConversationConfig, SafetyConfig
 from reachy_twitch_voice.conversation_session import OpenAIRealtimeSession
-from reachy_twitch_voice.input_adapter import TwitchChatInputAdapter
+from reachy_twitch_voice.input_adapter import ManualTextInputAdapter, TwitchChatInputAdapter
 from reachy_twitch_voice.tool_executor import ToolExecutor
 from reachy_twitch_voice.types import ConversationInputEvent, ConversationOutputEvent, TwitchMessage
 
@@ -28,26 +28,34 @@ class ConversationFlowTest(unittest.TestCase):
         self.assertEqual(ev.source, "twitch")
         self.assertEqual(ev.queue_age_ms, 0.0)
 
+    def test_manual_input_adapter_builds_manual_event(self) -> None:
+        adapter = ManualTextInputAdapter()
+        ev = adapter.build_event("hello", user_name="tester")
+        self.assertEqual(ev.user_name, "tester")
+        self.assertEqual(ev.channel, "manual")
+        self.assertEqual(ev.text, "hello")
+        self.assertEqual(ev.source, "manual")
+        self.assertTrue(ev.message_id)
+
     def test_tool_executor_emotion_mapping(self) -> None:
         ex = ToolExecutor()
-        g1 = ex.pick_gesture(ConversationOutputEvent("r", "joy", []))
-        g2 = ex.pick_gesture(ConversationOutputEvent("r", "surprise", []))
-        g3 = ex.pick_gesture(ConversationOutputEvent("r", "empathy", []))
-        self.assertIn(g1, {"nod", "sway", "tilt"})
-        self.assertIn(g2, {"look", "tilt", "nod"})
-        self.assertIn(g3, {"nod", "tilt", "look", "sway"})
-        self.assertNotEqual(g1, g2)
+        p1 = ex.build_motion_plan(ConversationOutputEvent("r", "joy", []))
+        p2 = ex.build_motion_plan(ConversationOutputEvent("r", "surprise", []))
+        p3 = ex.build_motion_plan(ConversationOutputEvent("r", "empathy", []))
+        self.assertIn(p1.fallback_gesture, {"nod", "sway", "tilt"})
+        self.assertIn(p2.fallback_gesture, {"look", "tilt", "nod"})
+        self.assertIn(p3.fallback_gesture, {"nod", "tilt", "look", "sway"})
+        self.assertEqual(p1.speech_opening_emotion, "happy")
+        self.assertEqual(p2.speech_opening_emotion, "surprised")
+        self.assertIn(p3.speech_opening_emotion, {"listening", "agree"})
 
     def test_tool_executor_tool_call_override(self) -> None:
         ex = ToolExecutor()
-        self.assertIn(
-            ex.pick_gesture(ConversationOutputEvent("ok", "empathy", ["dance.short"])),
-            {"sway", "nod", "look", "tilt"},
-        )
-        self.assertIn(
-            ex.pick_gesture(ConversationOutputEvent("ok", "joy", ["move.left"])),
-            {"look", "nod", "tilt"},
-        )
+        dance = ex.build_motion_plan(ConversationOutputEvent("ok", "empathy", ["dance.short"]))
+        left = ex.build_motion_plan(ConversationOutputEvent("ok", "joy", ["move.left"]))
+        self.assertIn(dance.fallback_gesture, {"sway", "nod", "look", "tilt"})
+        self.assertEqual(dance.dance_move, "simple_nod")
+        self.assertIn(left.fallback_gesture, {"look", "nod", "tilt"})
 
 
 class SessionFallbackTest(unittest.TestCase):

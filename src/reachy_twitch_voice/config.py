@@ -23,7 +23,7 @@ class RuntimeConfig:
     message_timeout_ms: int = 15000
     reconnect_max_sec: int = 30
     idle_motion_enabled: bool = True
-    idle_interval_sec: float = 0.3
+    idle_interval_sec: float = 3.0
     max_queue_size: int = 100
     max_queue_wait_ms: int = 15000
     drop_policy: str = "drop_oldest"
@@ -54,6 +54,12 @@ class ReachyConfig:
     connect_retries: int = 3
     connect_retry_interval_sec: float = 3.0
     idle_use_doa: bool = False
+    motion_style: str = "official"
+    idle_style: str = "attentive"
+    idle_first_delay_sec: float = 3.0
+    idle_glance_interval_sec: float = 10.0
+    speech_motion_scale: float = 0.65
+    emotion_motion_enabled: bool = True
 
 
 @dataclass(slots=True)
@@ -115,7 +121,7 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
     message_timeout_ms = int(os.getenv("MESSAGE_TIMEOUT_MS", "15000"))
     reconnect_max_sec = int(os.getenv("RECONNECT_MAX_SEC", "30"))
     idle_motion_enabled = _as_bool(os.getenv("IDLE_MOTION_ENABLED", "true"), True)
-    idle_interval_sec = float(os.getenv("IDLE_INTERVAL_SEC", "0.3"))
+    idle_interval_sec = float(os.getenv("IDLE_INTERVAL_SEC", "3.0"))
     max_queue_size = max(1, int(os.getenv("MAX_QUEUE_SIZE", "100")))
     max_queue_wait_ms = max(0, int(os.getenv("MAX_QUEUE_WAIT_MS", "15000")))
     drop_policy = os.getenv("QUEUE_DROP_POLICY", "drop_oldest").strip().lower() or "drop_oldest"
@@ -161,7 +167,22 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
         os.getenv("REACHY_CONNECT_RETRY_INTERVAL_SEC", "3.0")
     )
     idle_use_doa = _as_bool(os.getenv("IDLE_USE_DOA", "false"), False)
-    input_mode = os.getenv("CONVERSATION_INPUT_MODE", "twitch").strip() or "twitch"
+    motion_style = os.getenv("REACHY_MOTION_STYLE", "official").strip().lower() or "official"
+    if motion_style not in {"official", "legacy"}:
+        motion_style = "official"
+    idle_style = os.getenv("REACHY_IDLE_STYLE", "attentive").strip().lower() or "attentive"
+    if idle_style not in {"calm", "attentive"}:
+        idle_style = "attentive"
+    idle_first_delay_sec = float(os.getenv("REACHY_IDLE_FIRST_DELAY_SEC", "3.0"))
+    idle_glance_interval_sec = float(os.getenv("REACHY_IDLE_GLANCE_INTERVAL_SEC", "10.0"))
+    speech_motion_scale = float(os.getenv("REACHY_SPEECH_MOTION_SCALE", "0.65"))
+    emotion_motion_enabled = _as_bool(
+        os.getenv("REACHY_EMOTION_MOTION_ENABLED", "true"),
+        True,
+    )
+    input_mode = os.getenv("CONVERSATION_INPUT_MODE", "twitch").strip().lower() or "twitch"
+    if input_mode not in {"twitch", "manual_text"}:
+        input_mode = "twitch"
     conversation_engine = os.getenv("CONVERSATION_ENGINE", "realtime").strip().lower() or "realtime"
     if conversation_engine not in {"http", "realtime"}:
         conversation_engine = "realtime"
@@ -232,6 +253,12 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
             connect_retries=connect_retries,
             connect_retry_interval_sec=connect_retry_interval_sec,
             idle_use_doa=idle_use_doa,
+            motion_style=motion_style,
+            idle_style=idle_style,
+            idle_first_delay_sec=idle_first_delay_sec,
+            idle_glance_interval_sec=idle_glance_interval_sec,
+            speech_motion_scale=speech_motion_scale,
+            emotion_motion_enabled=emotion_motion_enabled,
         ),
         conversation=ConversationConfig(
             engine=conversation_engine,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 
@@ -8,6 +8,23 @@ SafetyReason = Literal["ok", "ng_word", "spam", "too_long", "unsafe_intent"]
 GesturePreset = Literal["nod", "look", "sway", "tilt", "idle"]
 VoiceStyle = Literal["default"]
 EmotionLabel = Literal["joy", "surprise", "empathy"]
+MotionStyle = Literal["official", "legacy"]
+IdleStyle = Literal["calm", "attentive"]
+BaselineMode = Literal["neutral", "attentive_idle", "breathing_idle"]
+ConversationInputSource = Literal["twitch", "manual"]
+
+
+@dataclass(slots=True)
+class MotionPlan:
+    fallback_gesture: GesturePreset = "idle"
+    speech_opening_emotion: str | None = None
+    post_speech_settle: str | None = "settle"
+    idle_profile: IdleStyle = "attentive"
+    baseline_mode: BaselineMode = "attentive_idle"
+    speech_motion_scale: float = 0.65
+    allow_antenna_follow_during_speech: bool = True
+    dance_move: str | None = None
+    idle_phrase_candidates: list[GesturePreset] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -35,6 +52,7 @@ class SpeechTask:
     gesture_preset: GesturePreset
     deadline_ms: int
     emotion: EmotionLabel = "empathy"
+    motion_plan: MotionPlan = field(default_factory=MotionPlan)
 
 
 @dataclass(slots=True)
@@ -45,7 +63,7 @@ class ConversationInputEvent:
     text: str
     received_at: float
     is_operator: bool = False
-    source: str = "twitch"
+    source: ConversationInputSource = "twitch"
     queue_age_ms: float = 0.0
 
 

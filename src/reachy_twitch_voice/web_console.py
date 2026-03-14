@@ -37,6 +37,8 @@ class WebConsoleServer:
         self._gradio = gr
         current = self._current_profile_data()
         profiles = self._profile_choices()
+        initial_mode = "manual_text" if self.app.input_mode == "manual" else "twitch"
+        manual_enabled = initial_mode == "manual_text"
 
         with gr.Blocks(title="Reachy Mini Twitch Voice Console") as ui:
             gr.Markdown(
@@ -45,6 +47,15 @@ class WebConsoleServer:
                     "LAN公開・無認証です。同一LAN内でのみ利用してください。"
                 )
             )
+            mode_select = gr.Radio(
+                label="Input Source Mode",
+                choices=["twitch", "manual_text"],
+                value=initial_mode,
+            )
+            input_status = gr.Markdown(f"現在の入力モード: `{initial_mode}`")
+            manual_user_name = gr.Textbox(label="Manual User Name", value="manual_tester", interactive=manual_enabled)
+            manual_text = gr.TextArea(label="Manual Input Text", value="", lines=4, interactive=manual_enabled)
+            send_btn = gr.Button("Send Manual Input", interactive=manual_enabled)
             profile_name = gr.Textbox(label="Profile Name", value=current.name)
             profile_select = gr.Dropdown(
                 label="Saved Profiles",
@@ -78,6 +89,43 @@ class WebConsoleServer:
             save_btn = gr.Button("Save")
             apply_btn = gr.Button("Apply")
             reload_btn = gr.Button("Load")
+
+            def _mode_status_text(mode: str, detail: str | None = None) -> str:
+                base = f"現在の入力モード: `{mode}`"
+                if not detail:
+                    return base
+                return f"{base}\n\n{detail}"
+
+            def _mode_ui_state(mode: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
+                manual = mode == "manual_text"
+                return (
+                    gr.update(interactive=manual),
+                    gr.update(interactive=manual),
+                    gr.update(interactive=manual),
+                    _mode_status_text(mode),
+                )
+
+            def _switch_mode(mode: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
+                async def _do_switch() -> None:
+                    await self.app.set_input_mode(mode)
+
+                future = asyncio.run_coroutine_threadsafe(_do_switch(), self.loop)
+                future.result(timeout=10)
+                return _mode_ui_state(mode)
+
+            def _send_manual_input(user_name: str, text: str, mode: str) -> tuple[str, str]:
+                if mode != "manual_text":
+                    return _mode_status_text(mode, "手入力は `manual_text` モード時のみ送信できます。"), text
+                if not text.strip():
+                    return _mode_status_text(mode, "空のテキストは送信できません。"), text
+
+                async def _do_send() -> str:
+                    await self.app.consume_manual_text(text=text.strip(), user_name=user_name.strip() or "manual_tester")
+                    return f"Sent manual input as `{user_name.strip() or 'manual_tester'}`."
+
+                future = asyncio.run_coroutine_threadsafe(_do_send(), self.loop)
+                result = future.result(timeout=30)
+                return _mode_status_text(mode, result), ""
 
             def _load(name: str) -> tuple[str, str, str, str, str, str, str, dict[str, Any], str]:
                 data = self._load_profile_for_ui(name)
@@ -185,6 +233,16 @@ class WebConsoleServer:
                     prompt_text,
                 ],
                 outputs=[status, profile_select, preview],
+            )
+            mode_select.change(
+                fn=_switch_mode,
+                inputs=[mode_select],
+                outputs=[manual_user_name, manual_text, send_btn, input_status],
+            )
+            send_btn.click(
+                fn=_send_manual_input,
+                inputs=[manual_user_name, manual_text, mode_select],
+                outputs=[input_status, manual_text],
             )
 
         self._ui = ui

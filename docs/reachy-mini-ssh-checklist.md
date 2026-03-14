@@ -176,10 +176,18 @@ PY
 ```bash
 export REACHY_TTS_ENGINE=espeak-ng
 export REACHY_TTS_LANG=ja
+export REACHY_MOTION_STYLE=official
+export REACHY_IDLE_STYLE=attentive
+export REACHY_IDLE_FIRST_DELAY_SEC=3.0
+export REACHY_IDLE_GLANCE_INTERVAL_SEC=10.0
+export REACHY_SPEECH_MOTION_SCALE=0.65
+export REACHY_EMOTION_MOTION_ENABLED=true
 ```
 
 補足:
 - `backend_status.ready` は 1.5.0 でも初期化直後は false のことがあります。`/api/state/full` が 200 なら実質稼働です。
+- `REACHY_MOTION_STYLE=official` では待機が `attentive -> breathing -> low-frequency phrase` の順に遷移します。
+- 実機チューニング前は上記の既定値のまま始め、違和感があれば `REACHY_IDLE_GLANCE_INTERVAL_SEC` と `REACHY_SPEECH_MOTION_SCALE` を先に調整します。
 
 ## 10. 終了
 

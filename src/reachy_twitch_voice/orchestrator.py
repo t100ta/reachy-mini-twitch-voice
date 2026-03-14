@@ -7,13 +7,13 @@ from dataclasses import dataclass
 
 from .config import ConversationConfig, PipelineConfig
 from .conversation_session import FALLBACK_REPLY, ConversationSession, create_conversation_session
-from .input_adapter import RealtimeInputAdapter
+from .input_adapter import ManualTextInputAdapter, RealtimeInputAdapter
 from .normalizer import normalize_comment
 from .reachy_adapter import ReachyAdapter
 from .safety import SafetyFilter
 from .tool_executor import ToolExecutor
 from .twitch_parser import parse_privmsg
-from .types import ConversationOutputEvent, RuntimeStats, SpeechTask
+from .types import ConversationInputEvent, ConversationInputSource, ConversationOutputEvent, RuntimeStats, SpeechTask
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,14 +39,29 @@ class AppOrchestrator:
             deps.cfg.safety,
         )
         self.tool_executor = deps.tool_executor or ToolExecutor()
+        self.manual_input_adapter = ManualTextInputAdapter()
         self.operator_usernames = set(deps.cfg.conversation.operator_usernames)
+        input_mode = deps.cfg.conversation.input_mode.strip().lower()
+        self.input_mode: ConversationInputSource = "manual" if input_mode == "manual_text" else "twitch"
 
     async def reload_conversation_config(self, cfg: ConversationConfig) -> None:
         self.deps.cfg.conversation = cfg
         self.operator_usernames = set(cfg.operator_usernames)
         await self.conversation.reload_config(cfg)
 
+    async def set_input_mode(self, mode: str) -> None:
+        normalized = mode.strip().lower()
+        self.input_mode = "manual" if normalized == "manual_text" else "twitch"
+
+    async def consume_manual_text(self, text: str, user_name: str = "manual_tester") -> None:
+        event = self.manual_input_adapter.build_event(text=text, user_name=user_name)
+        event.is_operator = event.user_name.lower() in self.operator_usernames
+        await self._process_event(event)
+
     async def consume_once(self, raw: str) -> None:
+        if self.input_mode != "twitch":
+            LOGGER.debug("Ignoring Twitch input while input_mode=%s", self.input_mode)
+            return
         msg = parse_privmsg(raw)
         if msg is None:
             return
@@ -71,12 +86,15 @@ class AppOrchestrator:
             return
         event.text = decision.sanitized_text or normalized
         event.is_operator = msg.user_name.lower() in self.operator_usernames
+        await self._process_event(event)
+
+    async def _process_event(self, event: ConversationInputEvent) -> None:
         try:
             convo = await self.conversation.generate(event)
         except Exception as exc:
             LOGGER.warning(
                 "Conversation generation failed id=%s error=%s; using fallback",
-                msg.id,
+                event.message_id,
                 exc,
             )
             convo = ConversationOutputEvent(
@@ -84,19 +102,21 @@ class AppOrchestrator:
                 emotion="empathy",
                 tool_calls=[],
             )
-        gesture = self.tool_executor.pick_gesture(convo)
+        motion_plan = self.tool_executor.build_motion_plan(convo)
+        gesture = motion_plan.fallback_gesture
 
         task = SpeechTask(
-            message_id=msg.id,
+            message_id=event.message_id,
             text_ja=convo.reply_text,
             voice_style="default",
             gesture_preset=gesture,
             emotion=convo.emotion,
             deadline_ms=self._speech_deadline_ms(convo.reply_text),
+            motion_plan=motion_plan,
         )
 
         timeout_s = task.deadline_ms / 1000
-        reaction_start_ms = (time.time() - msg.received_at) * 1000
+        reaction_start_ms = (time.time() - event.received_at) * 1000
         try:
             await asyncio.wait_for(self.deps.adapter.speak(task), timeout=timeout_s)
             self.stats.processed += 1
@@ -105,7 +125,7 @@ class AppOrchestrator:
             self.stats.failed += 1
             LOGGER.warning(
                 "Failed to speak message id=%s error_type=%s error=%r",
-                msg.id,
+                event.message_id,
                 type(exc).__name__,
                 exc,
             )

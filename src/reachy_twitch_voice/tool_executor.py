@@ -3,16 +3,48 @@ from __future__ import annotations
 import random
 import time
 
-from .types import ConversationOutputEvent, GesturePreset
+from .types import ConversationOutputEvent, GesturePreset, MotionPlan
 
 
 class ToolExecutor:
-    """Maps conversation emotion/tool calls to robot motion presets."""
+    """Maps conversation emotion/tool calls to robot motion intents."""
 
     def __init__(self) -> None:
         self._turn = 0
         self._last: GesturePreset = "idle"
         self._rng = random.Random(time.time_ns())
+
+    def build_motion_plan(self, output: ConversationOutputEvent) -> MotionPlan:
+        fallback = self.pick_gesture(output)
+        tool = self._pick_from_tool_calls(output.tool_calls)
+        if output.emotion == "joy":
+            opening = "happy" if "dance" not in " ".join(output.tool_calls).lower() else "celebration"
+            baseline = "attentive_idle"
+            idle_candidates = ["nod", "look"]
+        elif output.emotion == "surprise":
+            opening = "surprised"
+            baseline = "attentive_idle"
+            idle_candidates = ["look", "tilt"]
+        else:
+            opening = "listening" if len(output.reply_text) >= 36 else "agree"
+            baseline = "attentive_idle"
+            idle_candidates = ["nod", "tilt"]
+
+        dance_move = "simple_nod" if tool == "sway" and output.emotion == "joy" else None
+        if any("dance" in t.lower() for t in output.tool_calls):
+            dance_move = "simple_nod"
+
+        return MotionPlan(
+            fallback_gesture=fallback,
+            speech_opening_emotion=opening,
+            post_speech_settle="settle",
+            idle_profile="attentive",
+            baseline_mode=baseline,
+            speech_motion_scale=0.65 if output.emotion != "surprise" else 0.58,
+            allow_antenna_follow_during_speech=True,
+            dance_move=dance_move,
+            idle_phrase_candidates=idle_candidates,
+        )
 
     def pick_gesture(self, output: ConversationOutputEvent) -> GesturePreset:
         self._turn += 1
