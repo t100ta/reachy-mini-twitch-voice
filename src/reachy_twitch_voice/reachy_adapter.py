@@ -551,7 +551,7 @@ class ReachySdkAdapter(ReachyAdapter):
     ) -> None:
         frames = self._extract_sway_frames_from_wav(wav_path)
         if not frames:
-            frames = [{"pitch_deg": 0.6, "yaw_deg": 0.0, "roll_deg": 0.0, "gain": 0.2}]
+            frames = [{"pitch_deg": 2.4, "yaw_deg": 1.1, "roll_deg": 0.8, "gain": 0.55}]
         sign = -1.0 if base_preset in {"look", "tilt"} else 1.0
         idx = 0
         smooth_pitch = 0.0
@@ -580,7 +580,7 @@ class ReachySdkAdapter(ReachyAdapter):
                 smooth_gain,
                 motion_scale,
             )
-            await asyncio.sleep(0.18)
+            await asyncio.sleep(0.12)
             idx += 3
         await asyncio.to_thread(self._apply_speech_frame, 0.0, 0.0, 0.0, 0.0, motion_scale)
 
@@ -609,10 +609,10 @@ class ReachySdkAdapter(ReachyAdapter):
         if manager is None:
             return False
         g = min(max(gain, 0.0), 1.0)
-        scale = min(max(self.speech_motion_scale * motion_scale, 0.1), 1.5)
-        roll_rad = math.radians(roll_deg * (0.8 + 0.2 * g) * scale)
-        pitch_rad = math.radians(pitch_deg * (0.85 + 0.25 * g) * scale)
-        yaw_rad = math.radians(yaw_deg * (0.7 + 0.2 * g) * scale)
+        scale = min(max(self.speech_motion_scale * motion_scale, 0.55), 1.8)
+        roll_rad = math.radians(roll_deg * (1.0 + 0.35 * g) * scale)
+        pitch_rad = math.radians((pitch_deg + 0.4 * g) * (1.15 + 0.45 * g) * scale)
+        yaw_rad = math.radians(yaw_deg * (0.95 + 0.35 * g) * scale)
         manager.set_speech_offsets((0.0, 0.0, 0.0, roll_rad, pitch_rad, yaw_rad))
         return True
 

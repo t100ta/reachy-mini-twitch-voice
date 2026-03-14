@@ -44,6 +44,19 @@ class _CaptureConversation:
 
 
 class OrchestratorTest(unittest.IsolatedAsyncioTestCase):
+    async def test_long_reply_deadline_is_conservative(self) -> None:
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            runtime=RuntimeConfig(message_timeout_ms=1000, reconnect_max_sec=30),
+        )
+        adapter = MockReachyAdapter()
+        deps = AppDeps(cfg=cfg, adapter=adapter, irc_messages=asyncio.Queue())
+        orch = AppOrchestrator(deps)
+
+        deadline_ms = orch._speech_deadline_ms("あ" * 180)
+
+        self.assertGreaterEqual(deadline_ms, 70000)
+
     async def test_consume_once_speaks(self) -> None:
         cfg = PipelineConfig(
             twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
@@ -155,6 +168,25 @@ class OrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(adapter.spoken, [])
         self.assertEqual(orch.stats.dropped, 1)
+
+    async def test_max_queue_wait_zero_disables_stale_drop(self) -> None:
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            runtime=RuntimeConfig(
+                message_timeout_ms=1000,
+                reconnect_max_sec=30,
+                max_queue_wait_ms=0,
+            ),
+        )
+        adapter = MockReachyAdapter()
+        deps = AppDeps(cfg=cfg, adapter=adapter, irc_messages=asyncio.Queue())
+        orch = AppOrchestrator(deps)
+
+        raw = "@tmi-sent-ts=1000 :alice!alice@alice.tmi.twitch.tv PRIVMSG #chan :hello"
+        await orch.consume_once(raw)
+
+        self.assertEqual(len(adapter.spoken), 1)
+        self.assertEqual(orch.stats.dropped, 0)
 
     async def test_manual_mode_ignores_twitch_input(self) -> None:
         cfg = PipelineConfig(

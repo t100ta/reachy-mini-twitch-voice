@@ -75,7 +75,10 @@ class AppOrchestrator:
 
         event = self.input_adapter.to_conversation_input(msg)
         event.queue_age_ms = max((time.time() - msg.received_at) * 1000.0, 0.0)
-        if event.queue_age_ms > self.deps.cfg.runtime.max_queue_wait_ms:
+        if (
+            self.deps.cfg.runtime.max_queue_wait_ms > 0
+            and event.queue_age_ms > self.deps.cfg.runtime.max_queue_wait_ms
+        ):
             self.stats.dropped += 1
             LOGGER.info(
                 "Dropped stale message id=%s queue_age_ms=%.1f limit_ms=%s",
@@ -144,6 +147,8 @@ class AppOrchestrator:
 
     def _speech_deadline_ms(self, text: str) -> int:
         base = self.deps.cfg.runtime.message_timeout_ms
-        # Approximate JP speech duration + safety margin.
-        estimated = int((max(len(text), 1) / 6.0) * 1000) + 7000
-        return min(max(base, estimated), 45000)
+        # Keep playback alive for long-form Japanese replies.
+        # The previous estimate was too optimistic and could cancel
+        # playback before the WAV finished on long responses.
+        estimated = int((max(len(text), 1) / 3.0) * 1000) + 12000
+        return min(max(base, estimated), 120000)
