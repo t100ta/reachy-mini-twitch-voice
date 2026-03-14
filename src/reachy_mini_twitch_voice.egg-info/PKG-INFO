@@ -55,7 +55,7 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - `IDLE_MOTION_ENABLED` (optional, default: `true`)
 - `IDLE_INTERVAL_SEC` (optional, default: `3`)
 - `MAX_QUEUE_SIZE` (optional, default: `100`)
-- `MAX_QUEUE_WAIT_MS` (optional, default: `15000`)
+- `MAX_QUEUE_WAIT_MS` (optional, default: `60000`, `0` = disable stale-drop)
 - `QUEUE_DROP_POLICY` (optional, default: `drop_oldest`)
 - `REACHY_TTS_ENGINE` (optional, default: `espeak-ng`)
 - `REACHY_TTS_LANG` (optional, default: `ja`)

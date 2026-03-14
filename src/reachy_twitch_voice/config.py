@@ -25,7 +25,7 @@ class RuntimeConfig:
     idle_motion_enabled: bool = True
     idle_interval_sec: float = 3.0
     max_queue_size: int = 100
-    max_queue_wait_ms: int = 15000
+    max_queue_wait_ms: int = 60000
     drop_policy: str = "drop_oldest"
 
 
@@ -123,7 +123,7 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
     idle_motion_enabled = _as_bool(os.getenv("IDLE_MOTION_ENABLED", "true"), True)
     idle_interval_sec = float(os.getenv("IDLE_INTERVAL_SEC", "3.0"))
     max_queue_size = max(1, int(os.getenv("MAX_QUEUE_SIZE", "100")))
-    max_queue_wait_ms = max(0, int(os.getenv("MAX_QUEUE_WAIT_MS", "15000")))
+    max_queue_wait_ms = max(0, int(os.getenv("MAX_QUEUE_WAIT_MS", "60000")))
     drop_policy = os.getenv("QUEUE_DROP_POLICY", "drop_oldest").strip().lower() or "drop_oldest"
     if drop_policy not in {"drop_oldest"}:
         drop_policy = "drop_oldest"
