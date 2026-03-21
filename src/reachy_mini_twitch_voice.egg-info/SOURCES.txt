@@ -11,6 +11,7 @@ src/reachy_twitch_voice/conversation_session.py
 src/reachy_twitch_voice/dotenv_loader.py
 src/reachy_twitch_voice/input_adapter.py
 src/reachy_twitch_voice/main.py
+src/reachy_twitch_voice/movement_manager.py
 src/reachy_twitch_voice/normalizer.py
 src/reachy_twitch_voice/orchestrator.py
 src/reachy_twitch_voice/profile_store.py
@@ -26,6 +27,7 @@ src/reachy_twitch_voice/prompts/__init__.py
 src/reachy_twitch_voice/prompts/system_ja.txt
 tests/test_conversation_flow.py
 tests/test_main_replay.py
+tests/test_movement_manager.py
 tests/test_normalizer.py
 tests/test_orchestrator.py
 tests/test_profile_store.py

@@ -27,6 +27,10 @@ class RuntimeConfig:
     max_queue_size: int = 100
     max_queue_wait_ms: int = 60000
     drop_policy: str = "drop_oldest"
+    channel_events_enabled: bool = True
+    channel_event_types: list[str] = field(
+        default_factory=lambda: ["raid", "sub", "resub", "subgift"]
+    )
 
 
 @dataclass(slots=True)
@@ -81,6 +85,8 @@ class ConversationConfig:
     )
     profile_storage_dir: str = "~/.config/reachy-mini-twitch-voice/profiles"
     active_profile: str = ""
+    enable_tools: bool = True
+    enable_web_search: bool = False
 
 
 @dataclass(slots=True)
@@ -127,6 +133,12 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
     drop_policy = os.getenv("QUEUE_DROP_POLICY", "drop_oldest").strip().lower() or "drop_oldest"
     if drop_policy not in {"drop_oldest"}:
         drop_policy = "drop_oldest"
+    channel_events_enabled = _as_bool(os.getenv("CHANNEL_EVENTS_ENABLED", "true"), True)
+    channel_event_types_raw = os.getenv("CHANNEL_EVENT_TYPES", "").strip()
+    if channel_event_types_raw:
+        channel_event_types = [t.strip() for t in channel_event_types_raw.split(",") if t.strip()]
+    else:
+        channel_event_types = ["raid", "sub", "resub", "subgift"]
     tts_engine = os.getenv("REACHY_TTS_ENGINE", "espeak-ng").strip() or "espeak-ng"
     tts_lang = os.getenv("REACHY_TTS_LANG", "ja").strip() or "ja"
     tts_openai_model = (
@@ -211,6 +223,8 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
         or "~/.config/reachy-mini-twitch-voice/profiles"
     )
     active_profile = os.getenv("ACTIVE_PROFILE", "").strip()
+    enable_tools = _as_bool(os.getenv("ENABLE_TOOLS", "true"), True)
+    enable_web_search = _as_bool(os.getenv("ENABLE_WEB_SEARCH", "false"), False)
     operator_usernames = [
         u.strip().lower()
         for u in os.getenv("OPERATOR_USERNAMES", "tom_t100ta,にかなとむ").split(",")
@@ -235,6 +249,8 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
             max_queue_size=max_queue_size,
             max_queue_wait_ms=max_queue_wait_ms,
             drop_policy=drop_policy,
+            channel_events_enabled=channel_events_enabled,
+            channel_event_types=channel_event_types,
         ),
         reachy=ReachyConfig(
             tts_engine=tts_engine,
@@ -276,6 +292,8 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
             operator_usernames=operator_usernames or ["tom_t100ta", "にかなとむ"],
             profile_storage_dir=profile_storage_dir,
             active_profile=active_profile,
+            enable_tools=enable_tools,
+            enable_web_search=enable_web_search,
         ),
         web_console=WebConsoleConfig(
             enabled=web_console_enabled,
