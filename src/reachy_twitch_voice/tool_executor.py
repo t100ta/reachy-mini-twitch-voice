@@ -77,15 +77,15 @@ class ToolExecutor:
     def _pick_from_tool_calls(self, tool_calls: list[str]) -> GesturePreset | None:
         lowered = [t.lower() for t in tool_calls]
         for t in lowered:
-            if "dance.short" in t or "dance" in t:
+            if "dance_short" in t or "dance.short" in t or t.startswith("dance"):
                 return "sway"
-            if "move_head.left" in t or "move.left" in t:
+            if "move_left" in t or "move_head.left" in t or "move.left" in t:
                 return "look"
-            if "move_head.right" in t or "move.right" in t:
+            if "move_right" in t or "move_head.right" in t or "move.right" in t:
                 return "look"
-            if "move_head.up" in t or "move.up" in t:
+            if "move_up" in t or "move_head.up" in t or "move.up" in t:
                 return "nod"
-            if "move_head.down" in t or "move.down" in t:
+            if "move_down" in t or "move_head.down" in t or "move.down" in t:
                 return "nod"
             if "tilt" in t or "emotion" in t:
                 return "tilt"
