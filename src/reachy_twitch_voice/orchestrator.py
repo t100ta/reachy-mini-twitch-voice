@@ -12,8 +12,8 @@ from .normalizer import normalize_comment
 from .reachy_adapter import ReachyAdapter
 from .safety import SafetyFilter
 from .tool_executor import ToolExecutor
-from .twitch_parser import parse_privmsg
-from .types import ConversationInputEvent, ConversationInputSource, ConversationOutputEvent, RuntimeStats, SpeechTask
+from .twitch_parser import parse_privmsg, parse_usernotice
+from .types import ChannelEvent, ConversationInputEvent, ConversationInputSource, ConversationOutputEvent, RuntimeStats, SpeechTask
 
 LOGGER = logging.getLogger(__name__)
 
@@ -40,9 +40,13 @@ class AppOrchestrator:
         )
         self.tool_executor = deps.tool_executor or ToolExecutor()
         self.manual_input_adapter = ManualTextInputAdapter()
+        if hasattr(self.conversation, "update_twitch_context"):
+            self.conversation.update_twitch_context(deps.cfg.twitch.channel)
         self.operator_usernames = set(deps.cfg.conversation.operator_usernames)
         input_mode = deps.cfg.conversation.input_mode.strip().lower()
         self.input_mode: ConversationInputSource = "manual" if input_mode == "manual_text" else "twitch"
+        self.channel_events_enabled: bool = deps.cfg.runtime.channel_events_enabled
+        self.channel_event_types: set[str] = set(deps.cfg.runtime.channel_event_types)
 
     async def reload_conversation_config(self, cfg: ConversationConfig) -> None:
         self.deps.cfg.conversation = cfg
@@ -52,6 +56,12 @@ class AppOrchestrator:
     async def set_input_mode(self, mode: str) -> None:
         normalized = mode.strip().lower()
         self.input_mode = "manual" if normalized == "manual_text" else "twitch"
+
+    async def set_channel_events_enabled(self, enabled: bool) -> None:
+        self.channel_events_enabled = enabled
+
+    async def set_channel_event_types(self, types: list[str]) -> None:
+        self.channel_event_types = set(types)
 
     async def consume_manual_text(self, text: str, user_name: str = "manual_tester") -> None:
         event = self.manual_input_adapter.build_event(text=text, user_name=user_name)
@@ -64,6 +74,10 @@ class AppOrchestrator:
             return
         msg = parse_privmsg(raw)
         if msg is None:
+            if self.channel_events_enabled:
+                ch_event = parse_usernotice(raw)
+                if ch_event and ch_event.event_type in self.channel_event_types:
+                    await self._process_channel_event(ch_event)
             return
 
         normalized = normalize_comment(msg.text)
@@ -89,6 +103,28 @@ class AppOrchestrator:
             return
         event.text = decision.sanitized_text or normalized
         event.is_operator = msg.user_name.lower() in self.operator_usernames
+        await self._process_event(event)
+
+    async def _process_channel_event(self, ch_event: ChannelEvent) -> None:
+        display = ch_event.display_name or ch_event.user_name
+        if ch_event.system_msg:
+            text = ch_event.system_msg
+        elif ch_event.event_type == "raid":
+            count = ch_event.viewer_count if ch_event.viewer_count is not None else "？"
+            text = f"[ライド] {display}が{count}人の視聴者と共にやって来ました！"
+        else:
+            text = f"[サブスク] {display}がサブスクしてくれました！"
+
+        event = ConversationInputEvent(
+            message_id=ch_event.id,
+            user_name=ch_event.user_name,
+            display_name=ch_event.display_name,
+            channel=ch_event.channel,
+            text=text,
+            received_at=ch_event.received_at,
+            is_operator=ch_event.user_name.lower() in self.operator_usernames,
+            source="twitch_event",
+        )
         await self._process_event(event)
 
     async def _process_event(self, event: ConversationInputEvent) -> None:

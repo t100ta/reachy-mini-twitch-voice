@@ -18,6 +18,7 @@ class TwitchChatInputAdapter(InputAdapter):
         return ConversationInputEvent(
             message_id=msg.id,
             user_name=msg.user_name,
+            display_name=msg.display_name,
             channel=msg.channel,
             text=msg.text,
             received_at=msg.received_at,
@@ -36,6 +37,7 @@ class ManualTextInputAdapter(InputAdapter):
         return ConversationInputEvent(
             message_id=msg.id,
             user_name=msg.user_name,
+            display_name=msg.display_name,
             channel=msg.channel,
             text=msg.text,
             received_at=msg.received_at,
@@ -49,6 +51,7 @@ class ManualTextInputAdapter(InputAdapter):
         return ConversationInputEvent(
             message_id=str(uuid.uuid4()),
             user_name=user_name.strip() or "manual_tester",
+            display_name=user_name.strip() or "manual_tester",
             channel="manual",
             text=text,
             received_at=now,

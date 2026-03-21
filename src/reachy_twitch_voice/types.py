@@ -11,7 +11,7 @@ EmotionLabel = Literal["joy", "surprise", "empathy"]
 MotionStyle = Literal["official", "legacy"]
 IdleStyle = Literal["calm", "attentive"]
 BaselineMode = Literal["neutral", "attentive_idle", "breathing_idle"]
-ConversationInputSource = Literal["twitch", "manual"]
+ConversationInputSource = Literal["twitch", "manual", "twitch_event"]
 
 
 @dataclass(slots=True)
@@ -28,11 +28,24 @@ class MotionPlan:
 
 
 @dataclass(slots=True)
+class ChannelEvent:
+    id: str
+    event_type: str          # "raid", "sub", "resub", "subgift", "submysterygift"
+    channel: str
+    user_name: str
+    display_name: str | None
+    system_msg: str | None   # Twitch の system-msg タグ（\s → スペース変換済み）
+    viewer_count: int | None # raid の msg-param-viewerCount
+    received_at: float
+
+
+@dataclass(slots=True)
 class TwitchMessage:
     id: str
     channel: str
     user_id: str
     user_name: str
+    display_name: str | None
     text: str
     received_at: float
 
@@ -59,6 +72,7 @@ class SpeechTask:
 class ConversationInputEvent:
     message_id: str
     user_name: str
+    display_name: str | None
     channel: str
     text: str
     received_at: float

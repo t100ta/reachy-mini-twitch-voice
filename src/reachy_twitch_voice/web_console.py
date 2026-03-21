@@ -53,6 +53,17 @@ class WebConsoleServer:
                 value=initial_mode,
             )
             input_status = gr.Markdown(f"現在の入力モード: `{initial_mode}`")
+            gr.Markdown("### チャンネルイベント")
+            channel_events_cb = gr.Checkbox(
+                label="チャンネルイベントに反応する",
+                value=self.app.channel_events_enabled,
+            )
+            channel_event_types_cg = gr.CheckboxGroup(
+                label="反応するイベント種別",
+                choices=["raid", "sub", "resub", "subgift", "submysterygift"],
+                value=list(self.app.channel_event_types),
+            )
+            channel_events_status = gr.Markdown("")
             manual_user_name = gr.Textbox(label="Manual User Name", value="manual_tester", interactive=manual_enabled)
             manual_text = gr.TextArea(label="Manual Input Text", value="", lines=4, interactive=manual_enabled)
             send_btn = gr.Button("Send Manual Input", interactive=manual_enabled)
@@ -112,6 +123,16 @@ class WebConsoleServer:
                 future = asyncio.run_coroutine_threadsafe(_do_switch(), self.loop)
                 future.result(timeout=10)
                 return _mode_ui_state(mode)
+
+            def _toggle_channel_events(enabled: bool, types: list[str]) -> str:
+                async def _do_toggle() -> None:
+                    await self.app.set_channel_events_enabled(enabled)
+                    await self.app.set_channel_event_types(types)
+
+                future = asyncio.run_coroutine_threadsafe(_do_toggle(), self.loop)
+                future.result(timeout=10)
+                state = "ON" if enabled else "OFF"
+                return f"チャンネルイベント: {state} / 種別: {', '.join(types) if types else 'なし'}"
 
             def _send_manual_input(user_name: str, text: str, mode: str) -> tuple[str, str]:
                 if mode != "manual_text":
@@ -238,6 +259,16 @@ class WebConsoleServer:
                 fn=_switch_mode,
                 inputs=[mode_select],
                 outputs=[manual_user_name, manual_text, send_btn, input_status],
+            )
+            channel_events_cb.change(
+                fn=_toggle_channel_events,
+                inputs=[channel_events_cb, channel_event_types_cg],
+                outputs=[channel_events_status],
+            )
+            channel_event_types_cg.change(
+                fn=_toggle_channel_events,
+                inputs=[channel_events_cb, channel_event_types_cg],
+                outputs=[channel_events_status],
             )
             send_btn.click(
                 fn=_send_manual_input,

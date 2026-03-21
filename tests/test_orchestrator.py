@@ -227,6 +227,76 @@ class OrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(convo.last_event.source, "manual")
         self.assertEqual(convo.last_event.channel, "manual")
         self.assertEqual(convo.last_event.user_name, "tester")
+        self.assertEqual(convo.last_event.display_name, "tester")
+
+    async def test_channel_event_raid_speaks(self) -> None:
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            runtime=RuntimeConfig(message_timeout_ms=1000, reconnect_max_sec=30),
+        )
+        adapter = MockReachyAdapter()
+        convo = _CaptureConversation()
+        deps = AppDeps(
+            cfg=cfg,
+            adapter=adapter,
+            irc_messages=asyncio.Queue(),
+            conversation=convo,  # type: ignore[arg-type]
+        )
+        orch = AppOrchestrator(deps)
+
+        raw = (
+            "@msg-id=raid;login=raider;display-name=Raider;"
+            "msg-param-viewerCount=10;tmi-sent-ts=5000"
+            " :tmi.twitch.tv USERNOTICE #chan"
+        )
+        await orch.consume_once(raw)
+
+        self.assertEqual(len(adapter.spoken), 1)
+        self.assertIsNotNone(convo.last_event)
+        self.assertEqual(convo.last_event.source, "twitch_event")
+        self.assertIn("ライド", convo.last_event.text)
+
+    async def test_channel_event_disabled_ignores(self) -> None:
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            runtime=RuntimeConfig(
+                message_timeout_ms=1000,
+                reconnect_max_sec=30,
+                channel_events_enabled=False,
+            ),
+        )
+        adapter = MockReachyAdapter()
+        deps = AppDeps(cfg=cfg, adapter=adapter, irc_messages=asyncio.Queue())
+        orch = AppOrchestrator(deps)
+
+        raw = (
+            "@msg-id=raid;login=raider;tmi-sent-ts=5000"
+            " :tmi.twitch.tv USERNOTICE #chan"
+        )
+        await orch.consume_once(raw)
+
+        self.assertEqual(adapter.spoken, [])
+
+    async def test_channel_event_type_filter(self) -> None:
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            runtime=RuntimeConfig(
+                message_timeout_ms=1000,
+                reconnect_max_sec=30,
+                channel_event_types=["sub"],
+            ),
+        )
+        adapter = MockReachyAdapter()
+        deps = AppDeps(cfg=cfg, adapter=adapter, irc_messages=asyncio.Queue())
+        orch = AppOrchestrator(deps)
+
+        raw = (
+            "@msg-id=raid;login=raider;tmi-sent-ts=5000"
+            " :tmi.twitch.tv USERNOTICE #chan"
+        )
+        await orch.consume_once(raw)
+
+        self.assertEqual(adapter.spoken, [])
 
     async def test_manual_text_operator_detection(self) -> None:
         cfg = PipelineConfig(
