@@ -17,6 +17,7 @@ class ConversationFlowTest(unittest.TestCase):
             channel="chan",
             user_id="u1",
             user_name="alice",
+            display_name="Alice",
             text="hello",
             received_at=1.0,
         )
@@ -24,6 +25,7 @@ class ConversationFlowTest(unittest.TestCase):
         ev = adapter.to_conversation_input(msg)
         self.assertEqual(ev.message_id, "m1")
         self.assertEqual(ev.user_name, "alice")
+        self.assertEqual(ev.display_name, "Alice")
         self.assertEqual(ev.text, "hello")
         self.assertEqual(ev.source, "twitch")
         self.assertEqual(ev.queue_age_ms, 0.0)
@@ -32,10 +34,37 @@ class ConversationFlowTest(unittest.TestCase):
         adapter = ManualTextInputAdapter()
         ev = adapter.build_event("hello", user_name="tester")
         self.assertEqual(ev.user_name, "tester")
+        self.assertEqual(ev.display_name, "tester")
         self.assertEqual(ev.channel, "manual")
         self.assertEqual(ev.text, "hello")
         self.assertEqual(ev.source, "manual")
         self.assertTrue(ev.message_id)
+
+    def test_reply_decoration_uses_display_name_naturally(self) -> None:
+        sess = OpenAIRealtimeSession(ConversationConfig(openai_api_key=""), SafetyConfig())
+        ev = ConversationInputEvent(
+            message_id="address-user-case",
+            user_name="alice",
+            display_name="ありす",
+            channel="chan",
+            text="それ面白いね",
+            received_at=1.0,
+        )
+        decorated = sess._decorate_reply(ev, "そうなんだよね")
+        self.assertIn("ありす", decorated)
+
+    def test_prompt_includes_display_name(self) -> None:
+        sess = OpenAIRealtimeSession(ConversationConfig(openai_api_key=""), SafetyConfig())
+        ev = ConversationInputEvent(
+            message_id="m-display",
+            user_name="alice",
+            display_name="Alice",
+            channel="chan",
+            text="hello",
+            received_at=1.0,
+        )
+        prompt = sess._build_prompt(ev, "")
+        self.assertIn("display_name=Alice", prompt)
 
     def test_tool_executor_emotion_mapping(self) -> None:
         ex = ToolExecutor()
@@ -57,13 +86,22 @@ class ConversationFlowTest(unittest.TestCase):
         self.assertEqual(dance.dance_move, "simple_nod")
         self.assertIn(left.fallback_gesture, {"look", "nod", "tilt"})
 
+    def test_tool_executor_new_action_names(self) -> None:
+        ex = ToolExecutor()
+        dance_short = ex.build_motion_plan(ConversationOutputEvent("ok", "joy", ["dance_short"]))
+        move_left = ex.build_motion_plan(ConversationOutputEvent("ok", "joy", ["move_left"]))
+        move_up = ex.build_motion_plan(ConversationOutputEvent("ok", "empathy", ["move_up"]))
+        self.assertEqual(dance_short.dance_move, "simple_nod")
+        self.assertIn(move_left.fallback_gesture, {"look", "nod", "tilt"})
+        self.assertIn(move_up.fallback_gesture, {"nod", "look", "tilt"})
+
 
 class SessionFallbackTest(unittest.TestCase):
     def test_fallback_when_api_key_missing(self) -> None:
         cfg = ConversationConfig(openai_api_key="", context_window_size=30)
         sess = OpenAIRealtimeSession(cfg, SafetyConfig())
         ev = ConversationInputEvent(
-            message_id="m1", user_name="alice", channel="chan", text="hello", received_at=1.0
+            message_id="m1", user_name="alice", display_name=None, channel="chan", text="hello", received_at=1.0
         )
         out = asyncio.run(sess.generate(ev))
         self.assertTrue(out.reply_text)
@@ -73,10 +111,10 @@ class SessionFallbackTest(unittest.TestCase):
         cfg = ConversationConfig(openai_api_key="sk-test", context_window_size=30)
         sess = OpenAIRealtimeSession(cfg, SafetyConfig())
         ev = ConversationInputEvent(
-            message_id="m2", user_name="bob", channel="chan", text="hello", received_at=1.0
+            message_id="m2", user_name="bob", display_name=None, channel="chan", text="hello", received_at=1.0
         )
 
-        def _raise_timeout(_: OpenAIRealtimeSession, __: ConversationInputEvent) -> str:
+        def _raise_timeout(self: OpenAIRealtimeSession, event: ConversationInputEvent) -> tuple[str, list[str]]:
             raise TimeoutError("timed out")
 
         with patch.object(OpenAIRealtimeSession, "_call_openai", _raise_timeout):
@@ -100,7 +138,7 @@ class SessionFallbackTest(unittest.TestCase):
             sess = OpenAIRealtimeSession(cfg, SafetyConfig())
 
         ev = ConversationInputEvent(
-            message_id="m3", user_name="alice", channel="chan", text="hello", received_at=1.0
+            message_id="m3", user_name="alice", display_name=None, channel="chan", text="hello", received_at=1.0
         )
         prompt = sess._build_prompt(ev, "")
         self.assertIn("name=NUVA2", prompt)
@@ -119,7 +157,7 @@ class SessionFallbackTest(unittest.TestCase):
         )
         asyncio.run(sess.reload_config(new_cfg))
         ev = ConversationInputEvent(
-            message_id="m4", user_name="alice", channel="chan", text="hello", received_at=1.0
+            message_id="m4", user_name="alice", display_name=None, channel="chan", text="hello", received_at=1.0
         )
         prompt = sess._build_prompt(ev, "")
         self.assertIn("name=Reloaded", prompt)

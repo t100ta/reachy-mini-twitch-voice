@@ -13,6 +13,7 @@ class SafetyFilterTest(unittest.TestCase):
             channel="chan",
             user_id="u1",
             user_name="u1",
+            display_name=None,
             text="hello",
             received_at=0,
         )

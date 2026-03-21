@@ -35,6 +35,8 @@ Reachy Mini が Twitch チャットをリアルタイム受信して、日本語
 - `OPERATOR_USERNAMES` (optional, default: `tom_t100ta,にかなとむ`)
 - `PROFILE_STORAGE_DIR` (optional, default: `~/.config/reachy-mini-twitch-voice/profiles`)
 - `ACTIVE_PROFILE` (optional, default: empty = 保存済みアクティブプロフィールを優先)
+- `ENABLE_TOOLS` (optional, default: `true`): OpenAI ネイティブ function calling を有効化（`robot_action`, `get_twitch_info` ツール）
+- `ENABLE_WEB_SEARCH` (optional, default: `false`): OpenAI 組み込み `web_search_preview` ツールを有効化（遅延増加に注意）
 - `NG_WORDS` (optional, comma-separated)
 - `MAX_CHARS` (optional, default: `140`)
 - `SPAM_WINDOW_SEC` (optional, default: `5`)
@@ -266,6 +268,8 @@ curl -s -H "Authorization: OAuth ${TOKEN}" https://id.twitch.tv/oauth2/validate
 - 返答は全コメント対象
 - 直近30コメントを文脈として話題を膨らませる
 - 感情ラベル（`joy` / `surprise` / `empathy`）を同時生成し、動作へ同期
+- `ENABLE_TOOLS=true`（デフォルト）で OpenAI ネイティブ function calling を使用: `robot_action`（ダンス・頭部移動）, `get_twitch_info`（チャンネル情報取得）
+- `ENABLE_WEB_SEARCH=true` で Web 検索ツールを追加（OpenAI 組み込み `web_search_preview`）
 - `REACHY_MOTION_STYLE=official` では、待機は `attentive -> breathing -> low-frequency phrase` の段階制御で動く
 - 発話開始時は emotion に応じた短い公式モーションを優先し、発話中は縮小した speech overlay を重ねる
 - 発話終了後は短い settle モーションで姿勢を戻し、急停止感を避ける
