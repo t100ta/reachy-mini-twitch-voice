@@ -38,6 +38,18 @@ class _FakeClient:
         self.calls.append(("nod", ""))
 
 
+class _FakeMotionManager:
+    def __init__(self) -> None:
+        self.last_offsets = None
+        self.queued_moves = []
+
+    def set_speech_offsets(self, offsets):  # type: ignore[no-untyped-def]
+        self.last_offsets = offsets
+
+    def queue_move(self, move):  # type: ignore[no-untyped-def]
+        self.queued_moves.append(move)
+
+
 class ReachyAdapterTest(unittest.IsolatedAsyncioTestCase):
     def test_build_connect_kwargs_modes(self) -> None:
         a_auto = ReachySdkAdapter(host="reachy-mini.local", connection_mode="auto")
@@ -163,6 +175,25 @@ class ReachyAdapterTest(unittest.IsolatedAsyncioTestCase):
         finally:
             if os.path.exists(wav_path):
                 os.unlink(wav_path)
+
+    def test_apply_speech_frame_adds_visible_base_motion(self) -> None:
+        adapter = ReachySdkAdapter(host="127.0.0.1")
+        manager = _FakeMotionManager()
+        adapter._motion_manager = manager  # type: ignore[assignment]
+        with patch("reachy_twitch_voice.reachy_adapter.time.monotonic", return_value=1.0):
+            ok = adapter._apply_speech_frame(0.0, 0.0, 0.0, 0.0, 1.0)
+        self.assertTrue(ok)
+        self.assertIsNotNone(manager.last_offsets)
+        self.assertNotEqual(manager.last_offsets, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+
+    def test_queue_speaking_phrase_enqueues_small_move(self) -> None:
+        adapter = ReachySdkAdapter(host="127.0.0.1")
+        manager = _FakeMotionManager()
+        adapter._motion_manager = manager  # type: ignore[assignment]
+        adapter._resolve_gesture_fallback = lambda preset, **kwargs: ("move", preset, kwargs)  # type: ignore[method-assign]
+        adapter._rng.seed(1)
+        adapter._queue_speaking_phrase()
+        self.assertEqual(len(manager.queued_moves), 1)
 
     async def test_speak_waits_for_wav_duration(self) -> None:
         client = _FakeClient()

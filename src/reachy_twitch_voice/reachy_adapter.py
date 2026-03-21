@@ -558,6 +558,7 @@ class ReachySdkAdapter(ReachyAdapter):
         smooth_yaw = 0.0
         smooth_roll = 0.0
         smooth_gain = 0.0
+        next_phrase_at = self._rng.uniform(2.5, 4.0)
         while not stop_event.is_set():
             window = frames[idx : min(idx + 3, len(frames))]
             if not window:
@@ -580,6 +581,10 @@ class ReachySdkAdapter(ReachyAdapter):
                 smooth_gain,
                 motion_scale,
             )
+            elapsed = idx * 0.12
+            if elapsed >= next_phrase_at:
+                self._queue_speaking_phrase()
+                next_phrase_at += self._rng.uniform(2.5, 4.0)
             await asyncio.sleep(0.12)
             idx += 3
         await asyncio.to_thread(self._apply_speech_frame, 0.0, 0.0, 0.0, 0.0, motion_scale)
@@ -610,11 +615,30 @@ class ReachySdkAdapter(ReachyAdapter):
             return False
         g = min(max(gain, 0.0), 1.0)
         scale = min(max(self.speech_motion_scale * motion_scale, 0.55), 1.8)
-        roll_rad = math.radians(roll_deg * (1.0 + 0.35 * g) * scale)
-        pitch_rad = math.radians((pitch_deg + 0.4 * g) * (1.15 + 0.45 * g) * scale)
-        yaw_rad = math.radians(yaw_deg * (0.95 + 0.35 * g) * scale)
+        t = time.monotonic()
+        # Keep a visible, playful speech rhythm even when the audio envelope is flat.
+        base_pitch_deg = 1.6 * math.sin(2 * math.pi * 1.9 * t)
+        base_yaw_deg = 1.2 * math.sin(2 * math.pi * 0.85 * t + 0.4)
+        base_roll_deg = 0.8 * math.sin(2 * math.pi * 1.2 * t + 0.8)
+        energy = max(g, 0.28)
+        roll_rad = math.radians((roll_deg * (1.0 + 0.35 * g) + base_roll_deg) * scale * (0.9 + 0.25 * energy))
+        pitch_rad = math.radians(((pitch_deg + 0.4 * g) * (1.15 + 0.45 * g) + base_pitch_deg) * scale * (1.0 + 0.35 * energy))
+        yaw_rad = math.radians((yaw_deg * (0.95 + 0.35 * g) + base_yaw_deg) * scale * (0.95 + 0.25 * energy))
         manager.set_speech_offsets((0.0, 0.0, 0.0, roll_rad, pitch_rad, yaw_rad))
         return True
+
+    def _queue_speaking_phrase(self) -> None:
+        manager = self._motion_manager
+        if manager is None:
+            return
+        preset = self._rng.choice(["nod", "look"])
+        move = self._resolve_gesture_fallback(
+            preset,
+            antenna_scale=0.12,
+            motion_scale=0.45,
+        )
+        if move is not None:
+            manager.queue_move(move)
 
     def _cleanup_temp_wav(self, path: str) -> None:
         try:
