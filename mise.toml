@@ -1,0 +1,36 @@
+[tools]
+python = "3.12"
+uv = "0.10.9"
+
+[env]
+PYTHONPATH = "src"
+
+[tasks.setup]
+description = "Create .venv and install runtime dependencies"
+run = [
+    "uv venv --python 3.12 --allow-existing",
+    "uv pip install -e .",
+]
+
+[tasks.dev-setup]
+description = "Create .venv and install runtime + development dependencies"
+run = [
+    "uv venv --python 3.12 --allow-existing",
+    "uv pip install -e '.[dev]'",
+]
+
+[tasks.lock]
+description = "Update uv.lock"
+run = "uv lock"
+
+[tasks.test]
+description = "Run unit tests"
+run = "python -m unittest discover -s tests -v"
+
+[tasks.run-mock]
+description = "Run the app with the mock Reachy adapter"
+run = "python -m reachy_twitch_voice.main --mock"
+
+[tasks.replay]
+description = "Run local replay without Twitch connection"
+run = "python -m reachy_twitch_voice.main --mock --replay-file samples/replay_irc.txt"

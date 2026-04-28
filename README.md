@@ -127,29 +127,30 @@ PYTHONPATH=src python3 -m reachy_twitch_voice.main \
   --log-level INFO
 ```
 
-## Setup with uv
+## Setup with mise
 
 ```bash
 cd <PROJECT_DIR>
-uv python install 3.12
-uv venv --python 3.12
-source .venv/bin/activate
-uv pip install -e .
+mise trust
+mise install
+mise run setup
 ```
 
 開発ツールを入れる場合:
 
 ```bash
-uv pip install -e ".[dev]"
+mise run dev-setup
 ```
 
 ロックファイル作成:
 
 ```bash
-uv lock
+mise run lock
 ```
 
 注記:
+- Python と uv のバージョンは `mise.toml` で管理します。
+- Pythonパッケージの解決と `.venv` 作成は uv を使います。
 - 実機は `reachy-mini daemon 1.5.0` を前提にします。
 - 推奨: `uv pip install -r docs/requirements-reachy.txt`（`reachy-mini==1.5.0`）
 - `espeak-ng` が必要です（未導入の場合は `sudo apt install espeak-ng`）。
@@ -190,7 +191,7 @@ cd <PROJECT_DIR>
 export TWITCH_CHANNEL=your_channel
 export TWITCH_OAUTH_TOKEN=xxxxxxxx
 export TWITCH_NICK=your_bot_name
-PYTHONPATH=src python3 -m reachy_twitch_voice.main --mock
+mise run run-mock
 ```
 
 ## Run (Reachy SDK)
@@ -282,14 +283,14 @@ curl -s -H "Authorization: OAuth ${TOKEN}" https://id.twitch.tv/oauth2/validate
 
 ```bash
 cd <PROJECT_DIR>
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+mise run test
 ```
 
 ## Local E2E (no Twitch connection)
 
 ```bash
 cd <PROJECT_DIR>
-PYTHONPATH=src python3 -m reachy_twitch_voice.main --mock --replay-file samples/replay_irc.txt
+mise run replay
 ```
 
 このモードでは Twitch 認証環境変数が未設定でも動作し、以下を確認できます。
