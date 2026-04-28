@@ -1,3 +1,0 @@
-# Install this on Reachy Mini (or compatible runtime) when running real hardware mode.
-reachy-mini==1.5.0
-reachy-mini-dances-library>=0.1.0
