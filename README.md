@@ -2,7 +2,7 @@
 
 Reachy Mini が Twitch チャットをリアルタイム受信して、日本語で読み上げるアプリです。
 
-コマンド例の `<PROJECT_DIR>` / `<PROJECT_DIR_ON_REACHY>` / `<REACHY_USER>` / `<REACHY_HOST>` は実環境に合わせて置き換えてください。
+コマンド例の `<PROJECT_DIR>` / `<PROJECT_DIR_ON_REACHY>` / `<REACHY_USER>` / `<REACHY_HOST>` は実環境に合わせて置き換えてください。現環境では `<REACHY_USER>@<REACHY_HOST>` = `pollen@192.168.4.27` です（SSH アクセス手順は[下記セクション](#reachy-mini-への-ssh-アクセス)参照）。
 
 ## Features
 
@@ -122,10 +122,19 @@ chmod 600 ~/.config/reachy-mini-twitch-voice/.env.local
 ```bash
 # 実行時は固定のenvを指定
 cd <PROJECT_DIR>
-PYTHONPATH=src python3 -m reachy_twitch_voice.main \
+uv run python -m reachy_twitch_voice.main \
   --env-file ~/.config/reachy-mini-twitch-voice/.env.local \
   --log-level INFO
 ```
+
+> **uv が使えない場合の代替**: システムの `python3 -m venv .venv` + `audioop-lts` 手動インストールでも起動可能。
+> ```bash
+> python3 -m venv .venv
+> .venv/bin/pip install -e .
+> .venv/bin/pip install 'audioop-lts>=2.0.1'   # Python 3.13 の場合のみ必要
+> .venv/bin/python -m reachy_twitch_voice.main --env-file ...
+> ```
+> venv 内の pip は externally-managed の制限を受けない。
 
 ## Setup with mise
 
@@ -156,7 +165,68 @@ mise run lock
 - `espeak-ng` が必要です（未導入の場合は `sudo apt install espeak-ng`）。
 - より自然な発音は `REACHY_TTS_ENGINE=openai-tts` を推奨します（`OPENAI_API_KEY` 必須）。
 
+## Reachy Mini への SSH アクセス
+
+実機（Reachy Mini = Raspberry Pi, Raspberry Pi OS / Debian 系）へ SSH で入り、SDK 確認・コード同期・アプリ起動を行います。下記の rsync 例で使う `<REACHY_USER>@<REACHY_HOST>` はここの接続情報に対応します。
+
+| 項目 | 値 |
+|---|---|
+| IP | `192.168.4.27`（DHCP のため変動しうる。ルーターで予約推奨） |
+| ポート | 22（OpenSSH 10.0p2 / Raspberry Pi OS, Debian 系） |
+| ユーザー | `pollen`（※イメージング時に設定したユーザー。不明な場合は後述で確認） |
+| backend ダッシュボード | `http://192.168.4.27:8000/`（`/api/state/full` が 200 なら稼働中） |
+
+```bash
+# ログイン（初回は fingerprint を yes で受け入れ）
+ssh pollen@192.168.4.27
+
+# ログイン後の確認
+whoami                                             # 実際のログインユーザー名
+hostname                                           # 例: reachy-mini
+python3 -c "import reachy_mini; print('ok')"      # SDK 確認
+curl -i http://localhost:8000/api/state/full       # backend 稼働確認（200 なら OK）
+```
+
+鍵認証（毎回のパスワード入力を省く）:
+
+```bash
+ssh-keygen -t ed25519 -C "reachy-mini"   # 既存鍵があれば省略
+ssh-copy-id pollen@192.168.4.27
+```
+
+`~/.ssh/config` に登録すると `ssh reachy` で入れます:
+
+```
+Host reachy
+    HostName 192.168.4.27
+    User pollen
+    # IP が変動しやすい場合は HostName reachy-mini.local も検討（mDNS が両端で有効な場合）
+```
+
+ユーザー名が不明なときの確認方法:
+- 実機にディスプレイ/キーボードを繋いでログイン画面を見る
+- ルーターの DHCP クライアント一覧でホスト名 `reachy-mini` の IP を確認
+- 候補を順に試す: `ssh pollen@192.168.4.27` → 駄目なら `ssh reachy@...` / `ssh pi@...`
+
+注意:
+- IP は DHCP で変動しうるため、ルーターで MAC アドレス予約 or 固定 IP を推奨
+- コード同期（rsync）では `.env.local`（認証情報）を必ず除外する（下記 rsync 例に `--exclude '.env.local'` あり）
+- **デフォルトパスワードのままの場合は必ず変更してください**: Reachy Mini はLANに常時接続されます。同一LAN上の他の機器からアクセスされるリスクを避けるため、初回ログイン後すぐに `passwd` でパスワードを変更することを強く推奨します。鍵認証（上記 `ssh-copy-id`）に切り替えた後はパスワード認証を無効化するとさらに安全です
+
 ## 実機依存セットアップ（固定手順）
+
+### Python 環境のセットアップ（初回のみ）
+
+```bash
+# uv が無ければインストール（単体バイナリ。PEP668 の externally-managed に当たらない）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.local/bin/env   # パスを反映（シェル再起動でも可）
+
+# Python 3.12 の venv を作成して依存関係をインストール
+# （3.12 なら audioop は stdlib に存在するためパッケージ追加不要）
+uv venv --python 3.12
+uv pip install -e .
+```
 
 標準運用ホストは `on_reachy`（Reachy本体）です。
 
@@ -201,14 +271,14 @@ cd <PROJECT_DIR>
 mkdir -p ~/.config/reachy-mini-twitch-voice
 cp .env.local.example ~/.config/reachy-mini-twitch-voice/.env.local
 # ~/.config/reachy-mini-twitch-voice/.env.local を編集して値を入れる
-PYTHONPATH=src python3 -m reachy_twitch_voice.main \
+uv run python -m reachy_twitch_voice.main \
   --env-file ~/.config/reachy-mini-twitch-voice/.env.local
 ```
 
 Webコンソールを止めたい場合:
 
 ```bash
-PYTHONPATH=src python3 -m reachy_twitch_voice.main \
+uv run python -m reachy_twitch_voice.main \
   --env-file ~/.config/reachy-mini-twitch-voice/.env.local \
   --no-web-console
 ```
@@ -260,6 +330,46 @@ curl -s -H "Authorization: OAuth ${TOKEN}" https://id.twitch.tv/oauth2/validate
 - `.env.local` の `TWITCH_OAUTH_TOKEN=oauth:<new_token>` を更新
 - `TWITCH_NICK` がトークン発行ユーザー名と一致しているか確認
 
+## Twitch Token (Twitch CLI 方式)
+
+[Twitch CLI](https://github.com/twitchdev/twitch-cli) がインストール済みの場合はこちらの方が手順が少なく、リフレッシュも簡単です。curl 方式と結果は同じなので好みで選択してください。
+
+前提: Client ID を事前に設定（初回のみ）
+
+```bash
+twitch configure -i YOUR_CLIENT_ID -s YOUR_CLIENT_SECRET
+```
+
+### 新規取得
+
+```bash
+# --dcf: Device Code Flow（ブラウザ不要・Raspberry Pi / WSL でも動作）
+twitch token -u --dcf -s "chat:read"
+# → ブラウザで表示された URL を開いて認可すると CLI がトークンを表示
+```
+
+取得したトークンを `.env.local` に設定:
+
+```env
+TWITCH_OAUTH_TOKEN=oauth:ACCESS_TOKEN
+```
+
+### 有効期限切れ時のリフレッシュ
+
+```bash
+# Twitch CLI の設定ファイルからリフレッシュトークンを使って更新
+twitch token --refresh $(grep ^REFRESHTOKEN ~/.config/twitch-cli/.twitch-cli.env | cut -d= -f2)
+# → 出力された新しいアクセストークンを .env.local に更新
+```
+
+### 検証
+
+```bash
+twitch token -v ACCESS_TOKEN
+# または curl 方式と同じ
+curl -s -H "Authorization: OAuth ACCESS_TOKEN" https://id.twitch.tv/oauth2/validate
+```
+
 ## Conversation Behavior
 
 - 入力は Twitch チャットまたは Webコンソールの `manual_text` 疑似チャット入力（マイク入力は無効）
@@ -278,6 +388,17 @@ curl -s -H "Authorization: OAuth ${TOKEN}" https://id.twitch.tv/oauth2/validate
 - キュー混雑時は `drop_oldest` で古いメッセージを間引きし、遅延崩壊を防ぐ
 - `OPERATOR_USERNAMES` に一致するユーザー発言は「Operator」として扱う
 - チャット無入力が続くと待機モーションを実行する（`IDLE_MOTION_ENABLED=true`）
+
+## Hermes Agent (メイン会話エンジン)
+
+`CONVERSATION_ENGINE=hermes` で LAN 上の **Hermes Agent API Server**（OpenAI-compatible Chat Completions）を会話バックエンドとして使います。現在はこちらがメイン構成で、OpenAI 系の `realtime` / `http` は切り戻し用に残しています。
+
+Hermes 経路では以下の長期記憶機能が有効になります:
+
+- **視聴者メモリ**: 呼び方（preferred_name）・軽い好み（note）・来訪回数（visit_count）・前回の話題（last_topic）を SQLite (`viewer_memory.sqlite3`) に保存し、再来訪時に「おかえり、前は◯◯の話したね」と参照する
+- **配信日記（stream journal）**: 配信終了時にその回の出来事・学びを Hermes で要約して永続化し、次回起動時にシステムプロンプトへ注入。「前回の配信でね…」と語れる（`STREAM_JOURNAL_*` で設定）
+
+詳しい設定・起動・動作確認手順は [docs/hermes-integration.md](docs/hermes-integration.md) を参照してください。
 
 ## Tests
 

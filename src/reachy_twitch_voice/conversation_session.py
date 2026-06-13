@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Protocol
 
-from .config import ConversationConfig, SafetyConfig
+from .config import ConversationConfig, HermesConfig, SafetyConfig, ViewerMemoryConfig
 from .types import ConversationInputEvent, ConversationOutputEvent, ConversationTurn
 
 FALLBACK_REPLY = "コメントありがとう！その話、もう少し詳しく聞かせて。"
@@ -520,7 +520,28 @@ class OpenAIRealtimeSession(_OpenAISessionBase):
 def create_conversation_session(
     cfg: ConversationConfig,
     safety_cfg: SafetyConfig,
+    *,
+    hermes_cfg: HermesConfig | None = None,
+    viewer_memory_cfg: ViewerMemoryConfig | None = None,
+    viewer_store: object | None = None,
+    journal_store: object | None = None,
+    stream_journal_cfg: object | None = None,
 ) -> ConversationSession:
+    if cfg.engine == "hermes":
+        # Lazy import so that non-hermes runs do not pay for SQLite/Hermes module load.
+        from .config import StreamJournalConfig
+        from .hermes_session import HermesConversationSession
+        from .viewer_memory_store import NoopViewerMemoryStore
+
+        return HermesConversationSession(  # type: ignore[return-value]
+            cfg=cfg,
+            safety_cfg=safety_cfg,
+            hermes_cfg=hermes_cfg or HermesConfig(),
+            viewer_store=viewer_store or NoopViewerMemoryStore(),  # type: ignore[arg-type]
+            viewer_memory_cfg=viewer_memory_cfg,
+            journal_store=journal_store,
+            stream_journal_cfg=stream_journal_cfg or StreamJournalConfig(),  # type: ignore[arg-type]
+        )
     if cfg.engine == "http":
         return OpenAIHttpSession(cfg, safety_cfg)
     return OpenAIRealtimeSession(cfg, safety_cfg)

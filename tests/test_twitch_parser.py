@@ -39,6 +39,14 @@ class TwitchParserTest(unittest.TestCase):
         self.assertEqual(msg.display_name, "Bob")
         self.assertEqual(msg.received_at, 2.0)
 
+    def test_reads_numeric_user_id_from_tags(self) -> None:
+        raw = "@user-id=12345;display-name=Alice :alice!alice@alice.tmi.twitch.tv PRIVMSG #mychan :hi"
+        msg = parse_privmsg(raw)
+        self.assertIsNotNone(msg)
+        assert msg is not None
+        self.assertEqual(msg.user_id, "12345")
+        self.assertEqual(msg.user_name, "alice")
+
 
 class UsernoticeParserTest(unittest.TestCase):
     def _raid_raw(self) -> str:
@@ -74,6 +82,17 @@ class UsernoticeParserTest(unittest.TestCase):
         self.assertEqual(ev.user_name, "new_sub")
         self.assertEqual(ev.system_msg, "NewSub subscribed.")
         self.assertIsNone(ev.viewer_count)
+
+    def test_usernotice_reads_user_id_tag(self) -> None:
+        raw = (
+            "@msg-id=raid;login=raider;display-name=Raider;user-id=98765;"
+            "msg-param-viewerCount=5;tmi-sent-ts=5000"
+            " :tmi.twitch.tv USERNOTICE #mychan"
+        )
+        ev = parse_usernotice(raw)
+        self.assertIsNotNone(ev)
+        assert ev is not None
+        self.assertEqual(ev.user_id, "98765")
 
     def test_ignore_unsupported_msg_id(self) -> None:
         raw = (

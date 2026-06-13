@@ -11,7 +11,13 @@ from .dotenv_loader import load_env_file
 from .orchestrator import AppDeps, AppOrchestrator
 from .profile_store import ProfileStore
 from .reachy_adapter import MockReachyAdapter, ReachyMiniAdapter
+from .stream_journal_store import NoopStreamJournalStore, StreamJournalStore
 from .twitch_irc import TwitchIrcClient
+from .viewer_memory_store import (
+    NoopViewerMemoryStore,
+    ViewerMemoryStore,
+    ViewerMemoryStoreProtocol,
+)
 from .web_console import WebConsoleServer
 
 LOGGER = logging.getLogger(__name__)
@@ -132,7 +138,52 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
             cfg.reachy.idle_use_doa,
         )
 
-    deps = AppDeps(cfg=cfg, adapter=adapter, irc_messages=q)
+    viewer_memory: ViewerMemoryStoreProtocol
+    if cfg.viewer_memory.enabled:
+        try:
+            viewer_memory = ViewerMemoryStore(
+                db_path=cfg.viewer_memory.db_path,
+                max_notes=cfg.viewer_memory.max_notes,
+            )
+            LOGGER.info(
+                "Viewer memory enabled: db=%s max_notes=%d",
+                cfg.viewer_memory.db_path,
+                cfg.viewer_memory.max_notes,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "Viewer memory init failed (%s); continuing with no-op store",
+                exc,
+            )
+            viewer_memory = NoopViewerMemoryStore()
+    else:
+        viewer_memory = NoopViewerMemoryStore()
+
+    stream_journal: object
+    if cfg.stream_journal.enabled:
+        try:
+            stream_journal = StreamJournalStore(db_path=cfg.stream_journal.db_path)
+            LOGGER.info(
+                "Stream journal enabled: db=%s inject_recent=%d",
+                cfg.stream_journal.db_path,
+                cfg.stream_journal.inject_recent_count,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "Stream journal init failed (%s); continuing with no-op store",
+                exc,
+            )
+            stream_journal = NoopStreamJournalStore()
+    else:
+        stream_journal = NoopStreamJournalStore()
+
+    deps = AppDeps(
+        cfg=cfg,
+        adapter=adapter,
+        irc_messages=q,
+        viewer_memory=viewer_memory,
+        stream_journal=stream_journal,
+    )
     app = AppOrchestrator(deps)
     console: WebConsoleServer | None = None
 
@@ -142,6 +193,7 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
             raw = await q.get()
             await app.consume_once(raw)
         _log_stats(app)
+        await app.finalize_session()
         return
 
     if cfg.web_console.enabled:
@@ -182,6 +234,7 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
         producer.cancel()
         consumer.cancel()
         await asyncio.gather(producer, consumer, return_exceptions=True)
+        await app.finalize_session()
         stop = getattr(adapter, "stop", None)
         if callable(stop):
             await stop()

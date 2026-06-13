@@ -1,4 +1,6 @@
 import asyncio
+import tempfile
+import os
 import unittest
 
 from reachy_twitch_voice.config import (
@@ -6,10 +8,12 @@ from reachy_twitch_voice.config import (
     PipelineConfig,
     RuntimeConfig,
     SafetyConfig,
+    StreamJournalConfig,
     TwitchConfig,
 )
 from reachy_twitch_voice.orchestrator import AppDeps, AppOrchestrator
 from reachy_twitch_voice.reachy_adapter import MockReachyAdapter
+from reachy_twitch_voice.stream_journal_store import NoopStreamJournalStore, StreamJournalStore
 
 
 class SlowAdapter(MockReachyAdapter):
@@ -245,7 +249,7 @@ class OrchestratorTest(unittest.IsolatedAsyncioTestCase):
         orch = AppOrchestrator(deps)
 
         raw = (
-            "@msg-id=raid;login=raider;display-name=Raider;"
+            "@msg-id=raid;login=raider;display-name=Raider;user-id=42;"
             "msg-param-viewerCount=10;tmi-sent-ts=5000"
             " :tmi.twitch.tv USERNOTICE #chan"
         )
@@ -255,6 +259,7 @@ class OrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(convo.last_event)
         self.assertEqual(convo.last_event.source, "twitch_event")
         self.assertIn("ライド", convo.last_event.text)
+        self.assertEqual(convo.last_event.user_id, "42")
 
     async def test_channel_event_disabled_ignores(self) -> None:
         cfg = PipelineConfig(
@@ -318,6 +323,142 @@ class OrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(convo.last_event)
         self.assertTrue(convo.last_event.is_operator)
+
+
+class _SummarizingConversation(_CaptureConversation):
+    """Conversation session with a generate_stream_summary method."""
+
+    def __init__(self, summary: dict | None = None, *, delay: float = 0.0) -> None:
+        super().__init__()
+        self._summary = summary
+        self._delay = delay
+        self.session_log: list[dict] = [{"t": i} for i in range(5)]
+        self._seen_this_session: set[str] = {"u1", "u2"}
+
+    async def generate_stream_summary(self, min_turns: int = 3) -> dict | None:
+        if self._delay > 0:
+            await asyncio.sleep(self._delay)
+        return self._summary
+
+
+class FinalizeSessionTest(unittest.IsolatedAsyncioTestCase):
+    async def _make_orch_with_real_journal(self) -> tuple[AppOrchestrator, StreamJournalStore, str]:
+        tmp = tempfile.mkdtemp()
+        db_path = os.path.join(tmp, "viewer_memory.sqlite3")
+        journal = StreamJournalStore(db_path)
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            stream_journal=StreamJournalConfig(
+                enabled=True,
+                db_path=db_path,
+                summary_timeout_sec=5.0,
+                min_turns_for_summary=3,
+            ),
+        )
+        adapter = MockReachyAdapter()
+        convo = _SummarizingConversation(
+            summary={"summary": "テスト配信", "highlights": ["面白かった"], "learnings": []}
+        )
+        deps = AppDeps(
+            cfg=cfg,
+            adapter=adapter,
+            irc_messages=asyncio.Queue(),
+            conversation=convo,  # type: ignore[arg-type]
+            stream_journal=journal,
+        )
+        orch = AppOrchestrator(deps)
+        return orch, journal, tmp
+
+    async def test_finalize_session_success(self) -> None:
+        orch, journal, tmp = await self._make_orch_with_real_journal()
+        await orch.finalize_session()
+        # Entry should now be finalized
+        entries = journal.list_recent_finalized(limit=5)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].summary, "テスト配信")
+        self.assertIn("面白かった", entries[0].highlights)
+
+    async def test_finalize_session_no_summarizer(self) -> None:
+        """If conversation has no generate_stream_summary, ended_at is updated only."""
+        tmp = tempfile.mkdtemp()
+        db_path = os.path.join(tmp, "viewer_memory.sqlite3")
+        journal = StreamJournalStore(db_path)
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            stream_journal=StreamJournalConfig(
+                enabled=True,
+                db_path=db_path,
+                summary_timeout_sec=5.0,
+                min_turns_for_summary=3,
+            ),
+        )
+        adapter = MockReachyAdapter()
+        convo = _CaptureConversation()  # no generate_stream_summary
+        deps = AppDeps(
+            cfg=cfg,
+            adapter=adapter,
+            irc_messages=asyncio.Queue(),
+            conversation=convo,  # type: ignore[arg-type]
+            stream_journal=journal,
+        )
+        orch = AppOrchestrator(deps)
+        # Should not raise
+        await orch.finalize_session()
+        # Entry should stay unfinalized (summary=NULL)
+        entries = journal.list_recent_finalized(limit=5)
+        self.assertEqual(entries, [])
+
+    async def test_finalize_session_timeout_updates_ended_at_only(self) -> None:
+        """If summary generation times out, ended_at is updated but summary stays NULL."""
+        tmp = tempfile.mkdtemp()
+        db_path = os.path.join(tmp, "viewer_memory.sqlite3")
+        journal = StreamJournalStore(db_path)
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            stream_journal=StreamJournalConfig(
+                enabled=True,
+                db_path=db_path,
+                summary_timeout_sec=0.01,  # very short timeout
+                min_turns_for_summary=3,
+            ),
+        )
+        adapter = MockReachyAdapter()
+        convo = _SummarizingConversation(
+            summary={"summary": "遅い配信", "highlights": [], "learnings": []},
+            delay=1.0,  # much longer than timeout
+        )
+        deps = AppDeps(
+            cfg=cfg,
+            adapter=adapter,
+            irc_messages=asyncio.Queue(),
+            conversation=convo,  # type: ignore[arg-type]
+            stream_journal=journal,
+        )
+        orch = AppOrchestrator(deps)
+        await orch.finalize_session()
+        # Summary should be NULL (not finalized)
+        entries = journal.list_recent_finalized(limit=5)
+        self.assertEqual(entries, [])
+
+    async def test_finalize_session_noop_when_no_journal_entry(self) -> None:
+        """finalize_session is a no-op when _journal_entry_id is None."""
+        cfg = PipelineConfig(
+            twitch=TwitchConfig(channel="chan", oauth_token="t", nick="n"),
+            stream_journal=StreamJournalConfig(enabled=False),
+        )
+        adapter = MockReachyAdapter()
+        noop_journal = NoopStreamJournalStore()
+        deps = AppDeps(
+            cfg=cfg,
+            adapter=adapter,
+            irc_messages=asyncio.Queue(),
+            stream_journal=noop_journal,
+        )
+        orch = AppOrchestrator(deps)
+        # _journal_entry_id should be None since noop returns -1 and we check the type
+        # But actually NoopStreamJournalStore.start_entry returns -1.
+        # The check in __init__ is isinstance(..., NoopStreamJournalStore), so this is fine.
+        await orch.finalize_session()  # Should not raise
 
 
 if __name__ == "__main__":

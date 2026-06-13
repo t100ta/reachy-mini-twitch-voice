@@ -37,6 +37,7 @@ class ChannelEvent:
     system_msg: str | None   # Twitch の system-msg タグ（\s → スペース変換済み）
     viewer_count: int | None # raid の msg-param-viewerCount
     received_at: float
+    user_id: str | None = None  # Twitch numeric user-id from IRC tags, when available
 
 
 @dataclass(slots=True)
@@ -79,6 +80,7 @@ class ConversationInputEvent:
     is_operator: bool = False
     source: ConversationInputSource = "twitch"
     queue_age_ms: float = 0.0
+    user_id: str | None = None  # Twitch numeric user-id when available; stable across login changes
 
 
 @dataclass(slots=True)

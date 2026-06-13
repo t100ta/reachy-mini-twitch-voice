@@ -16,6 +16,7 @@ def parse_privmsg(raw: str) -> TwitchMessage | None:
 
     received_at = time.time()
     display_name: str | None = None
+    tag_user_id: str | None = None
     line = raw
     if raw.startswith("@") and " :" in raw:
         try:
@@ -28,6 +29,9 @@ def parse_privmsg(raw: str) -> TwitchMessage | None:
                 elif kv.startswith("display-name="):
                     value = kv.split("=", 1)[1]
                     display_name = value or None
+                elif kv.startswith("user-id="):
+                    value = kv.split("=", 1)[1].strip()
+                    tag_user_id = value or None
         except Exception:
             line = raw
 
@@ -45,7 +49,7 @@ def parse_privmsg(raw: str) -> TwitchMessage | None:
     return TwitchMessage(
         id=str(uuid.uuid4()),
         channel=channel.strip().lower(),
-        user_id=user.lower(),
+        user_id=tag_user_id or user.lower(),
         user_name=user,
         display_name=display_name,
         text=text,
@@ -63,6 +67,7 @@ def parse_usernotice(raw: str) -> ChannelEvent | None:
     display_name: str | None = None
     system_msg: str | None = None
     viewer_count: int | None = None
+    user_id: str | None = None
     channel: str = ""
 
     line = raw
@@ -84,6 +89,8 @@ def parse_usernotice(raw: str) -> ChannelEvent | None:
                         viewer_count = int(value)
                     except (ValueError, TypeError):
                         pass
+                elif key == "user-id":
+                    user_id = value or None
                 elif key == "tmi-sent-ts":
                     try:
                         ms = int(value)
@@ -117,4 +124,5 @@ def parse_usernotice(raw: str) -> ChannelEvent | None:
         system_msg=system_msg,
         viewer_count=viewer_count,
         received_at=received_at,
+        user_id=user_id,
     )

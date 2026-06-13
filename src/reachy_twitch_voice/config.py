@@ -90,6 +90,36 @@ class ConversationConfig:
 
 
 @dataclass(slots=True)
+class HermesConfig:
+    base_url: str = "http://127.0.0.1:8642/v1"
+    api_key: str = ""
+    model: str = "hermes-agent"
+    timeout_sec: float = 12.0
+    stream: bool = False
+    use_responses_api: bool = False
+    conversation_prefix: str = "reachy-twitch"
+    system_prompt_file: str = ""
+    retry_count: int = 1
+
+
+@dataclass(slots=True)
+class ViewerMemoryConfig:
+    enabled: bool = True
+    db_path: str = "~/.config/reachy-mini-twitch-voice/viewer_memory.sqlite3"
+    max_notes: int = 8
+    save_source_message: bool = False
+
+
+@dataclass(slots=True)
+class StreamJournalConfig:
+    enabled: bool = True
+    db_path: str = "~/.config/reachy-mini-twitch-voice/viewer_memory.sqlite3"
+    inject_recent_count: int = 2
+    summary_timeout_sec: float = 20.0
+    min_turns_for_summary: int = 3
+
+
+@dataclass(slots=True)
 class PipelineConfig:
     twitch: TwitchConfig
     safety: SafetyConfig = field(default_factory=SafetyConfig)
@@ -97,6 +127,9 @@ class PipelineConfig:
     reachy: ReachyConfig = field(default_factory=ReachyConfig)
     conversation: ConversationConfig = field(default_factory=ConversationConfig)
     web_console: WebConsoleConfig = field(default_factory=WebConsoleConfig)
+    hermes: HermesConfig = field(default_factory=HermesConfig)
+    viewer_memory: ViewerMemoryConfig = field(default_factory=ViewerMemoryConfig)
+    stream_journal: StreamJournalConfig = field(default_factory=StreamJournalConfig)
 
 
 def _as_bool(value: str, default: bool = True) -> bool:
@@ -196,7 +229,7 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
     if input_mode not in {"twitch", "manual_text"}:
         input_mode = "twitch"
     conversation_engine = os.getenv("CONVERSATION_ENGINE", "realtime").strip().lower() or "realtime"
-    if conversation_engine not in {"http", "realtime"}:
+    if conversation_engine not in {"http", "realtime", "hermes"}:
         conversation_engine = "realtime"
     context_window_size = int(os.getenv("TWITCH_MESSAGE_CONTEXT_WINDOW", "30"))
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -233,6 +266,55 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
     web_console_enabled = _as_bool(os.getenv("WEB_CONSOLE_ENABLED", "true"), True)
     web_console_host = os.getenv("WEB_CONSOLE_HOST", "0.0.0.0").strip() or "0.0.0.0"
     web_console_port = int(os.getenv("WEB_CONSOLE_PORT", "7860"))
+
+    hermes_base_url = (
+        os.getenv("HERMES_BASE_URL", "http://127.0.0.1:8642/v1").strip()
+        or "http://127.0.0.1:8642/v1"
+    )
+    hermes_api_key = os.getenv("HERMES_API_KEY", "").strip()
+    hermes_model = os.getenv("HERMES_MODEL", "hermes-agent").strip() or "hermes-agent"
+    hermes_timeout_sec = float(os.getenv("HERMES_TIMEOUT_SEC", "12.0"))
+    hermes_stream = _as_bool(os.getenv("HERMES_STREAM", "false"), False)
+    hermes_use_responses_api = _as_bool(
+        os.getenv("HERMES_USE_RESPONSES_API", "false"), False
+    )
+    hermes_conversation_prefix = (
+        os.getenv("HERMES_CONVERSATION_PREFIX", "reachy-twitch").strip()
+        or "reachy-twitch"
+    )
+    hermes_system_prompt_file = os.getenv("HERMES_SYSTEM_PROMPT_FILE", "").strip()
+    hermes_retry_count = max(0, int(os.getenv("HERMES_RETRY_COUNT", "1")))
+
+    viewer_memory_enabled = _as_bool(os.getenv("VIEWER_MEMORY_ENABLED", "true"), True)
+    viewer_memory_db_path = (
+        os.getenv(
+            "VIEWER_MEMORY_DB_PATH",
+            "~/.config/reachy-mini-twitch-voice/viewer_memory.sqlite3",
+        ).strip()
+        or "~/.config/reachy-mini-twitch-voice/viewer_memory.sqlite3"
+    )
+    viewer_memory_max_notes = max(0, int(os.getenv("VIEWER_MEMORY_MAX_NOTES", "8")))
+    viewer_memory_save_source = _as_bool(
+        os.getenv("VIEWER_MEMORY_SAVE_SOURCE_MESSAGE", "false"), False
+    )
+
+    stream_journal_enabled = _as_bool(os.getenv("STREAM_JOURNAL_ENABLED", "true"), True)
+    stream_journal_db_path = (
+        os.getenv(
+            "STREAM_JOURNAL_DB_PATH",
+            "~/.config/reachy-mini-twitch-voice/viewer_memory.sqlite3",
+        ).strip()
+        or "~/.config/reachy-mini-twitch-voice/viewer_memory.sqlite3"
+    )
+    stream_journal_inject_recent_count = max(
+        0, int(os.getenv("STREAM_JOURNAL_INJECT_RECENT_COUNT", "2"))
+    )
+    stream_journal_summary_timeout_sec = float(
+        os.getenv("STREAM_JOURNAL_SUMMARY_TIMEOUT_SEC", "20.0")
+    )
+    stream_journal_min_turns = max(
+        0, int(os.getenv("STREAM_JOURNAL_MIN_TURNS_FOR_SUMMARY", "3"))
+    )
 
     return PipelineConfig(
         twitch=TwitchConfig(channel=channel, oauth_token=token, nick=nick),
@@ -299,5 +381,29 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
             enabled=web_console_enabled,
             host=web_console_host,
             port=web_console_port,
+        ),
+        hermes=HermesConfig(
+            base_url=hermes_base_url,
+            api_key=hermes_api_key,
+            model=hermes_model,
+            timeout_sec=hermes_timeout_sec,
+            stream=hermes_stream,
+            use_responses_api=hermes_use_responses_api,
+            conversation_prefix=hermes_conversation_prefix,
+            system_prompt_file=hermes_system_prompt_file,
+            retry_count=hermes_retry_count,
+        ),
+        viewer_memory=ViewerMemoryConfig(
+            enabled=viewer_memory_enabled,
+            db_path=viewer_memory_db_path,
+            max_notes=viewer_memory_max_notes,
+            save_source_message=viewer_memory_save_source,
+        ),
+        stream_journal=StreamJournalConfig(
+            enabled=stream_journal_enabled,
+            db_path=stream_journal_db_path,
+            inject_recent_count=stream_journal_inject_recent_count,
+            summary_timeout_sec=stream_journal_summary_timeout_sec,
+            min_turns_for_summary=stream_journal_min_turns,
         ),
     )

@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from .config import ConversationConfig, PipelineConfig
 from .conversation_session import FALLBACK_REPLY, ConversationSession, create_conversation_session
@@ -11,9 +12,11 @@ from .input_adapter import ManualTextInputAdapter, RealtimeInputAdapter
 from .normalizer import normalize_comment
 from .reachy_adapter import ReachyAdapter
 from .safety import SafetyFilter
+from .stream_journal_store import NoopStreamJournalStore, StreamJournalStore
 from .tool_executor import ToolExecutor
 from .twitch_parser import parse_privmsg, parse_usernotice
 from .types import ChannelEvent, ConversationInputEvent, ConversationInputSource, ConversationOutputEvent, RuntimeStats, SpeechTask
+from .viewer_memory_store import NoopViewerMemoryStore, ViewerMemoryStoreProtocol
 
 LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +29,8 @@ class AppDeps:
     input_adapter: RealtimeInputAdapter | None = None
     conversation: ConversationSession | None = None
     tool_executor: ToolExecutor | None = None
+    viewer_memory: ViewerMemoryStoreProtocol | None = None
+    stream_journal: object | None = None  # StreamJournalStore or NoopStreamJournalStore
 
 
 class AppOrchestrator:
@@ -34,9 +39,17 @@ class AppOrchestrator:
         self.stats = RuntimeStats()
         self.filter = SafetyFilter(deps.cfg.safety)
         self.input_adapter = deps.input_adapter or RealtimeInputAdapter()
+        self.viewer_memory: ViewerMemoryStoreProtocol = (
+            deps.viewer_memory or NoopViewerMemoryStore()
+        )
         self.conversation = deps.conversation or create_conversation_session(
             deps.cfg.conversation,
             deps.cfg.safety,
+            hermes_cfg=deps.cfg.hermes,
+            viewer_memory_cfg=deps.cfg.viewer_memory,
+            viewer_store=self.viewer_memory,
+            journal_store=deps.stream_journal,
+            stream_journal_cfg=deps.cfg.stream_journal,
         )
         self.tool_executor = deps.tool_executor or ToolExecutor()
         self.manual_input_adapter = ManualTextInputAdapter()
@@ -47,6 +60,64 @@ class AppOrchestrator:
         self.input_mode: ConversationInputSource = "manual" if input_mode == "manual_text" else "twitch"
         self.channel_events_enabled: bool = deps.cfg.runtime.channel_events_enabled
         self.channel_event_types: set[str] = set(deps.cfg.runtime.channel_event_types)
+        # Stream journal
+        journal_cfg = deps.cfg.stream_journal
+        if deps.stream_journal is not None:
+            self.stream_journal = deps.stream_journal
+        elif journal_cfg.enabled:
+            try:
+                self.stream_journal: object = StreamJournalStore(journal_cfg.db_path)
+            except Exception as exc:
+                LOGGER.warning("stream_journal: init failed (%s); using noop", exc)
+                self.stream_journal = NoopStreamJournalStore()
+        else:
+            self.stream_journal = NoopStreamJournalStore()
+        self._journal_entry_id: int | None = None
+        if not isinstance(self.stream_journal, NoopStreamJournalStore):
+            try:
+                started_at = datetime.now(tz=timezone.utc).isoformat()
+                self._journal_entry_id = self.stream_journal.start_entry(started_at)  # type: ignore[attr-defined]
+            except Exception as exc:
+                LOGGER.warning("stream_journal: start_entry failed: %s", exc)
+                self._journal_entry_id = None
+
+    async def finalize_session(self) -> None:
+        """Generate a stream summary and persist it to the journal. Called at shutdown."""
+        if self._journal_entry_id is None:
+            return
+        ended_at = datetime.now(tz=timezone.utc).isoformat()
+        journal_cfg = self.deps.cfg.stream_journal
+        summarizer = getattr(self.conversation, "generate_stream_summary", None)
+        result: dict | None = None
+        if callable(summarizer):
+            try:
+                result = await asyncio.wait_for(
+                    summarizer(min_turns=journal_cfg.min_turns_for_summary),
+                    timeout=journal_cfg.summary_timeout_sec,
+                )
+            except asyncio.TimeoutError:
+                LOGGER.warning("stream_journal: summary generation timed out")
+            except Exception as exc:
+                LOGGER.warning("stream_journal: summary generation failed: %s", exc)
+
+        try:
+            if result is not None:
+                self.stream_journal.finalize_entry(  # type: ignore[attr-defined]
+                    entry_id=self._journal_entry_id,
+                    ended_at=ended_at,
+                    summary=result.get("summary", ""),
+                    highlights=result.get("highlights", []),
+                    learnings=result.get("learnings", []),
+                    turn_count=len(getattr(self.conversation, "session_log", [])),
+                    unique_viewers=len(getattr(self.conversation, "_seen_this_session", set())),
+                )
+            else:
+                # Update ended_at only; summary stays NULL (crash-safe)
+                update_fn = getattr(self.stream_journal, "update_ended_at", None)
+                if callable(update_fn):
+                    update_fn(entry_id=self._journal_entry_id, ended_at=ended_at)
+        except Exception as exc:
+            LOGGER.warning("stream_journal: finalize_entry failed: %s", exc)
 
     async def reload_conversation_config(self, cfg: ConversationConfig) -> None:
         self.deps.cfg.conversation = cfg
@@ -124,6 +195,7 @@ class AppOrchestrator:
             received_at=ch_event.received_at,
             is_operator=ch_event.user_name.lower() in self.operator_usernames,
             source="twitch_event",
+            user_id=ch_event.user_id,
         )
         await self._process_event(event)
 
@@ -141,6 +213,17 @@ class AppOrchestrator:
                 emotion="empathy",
                 tool_calls=[],
             )
+
+        # Hermes (and any future engine) may decide to skip speech by returning
+        # an empty reply_text (should_speak=false). Treat that as silence.
+        if not convo.reply_text.strip():
+            LOGGER.info(
+                "Skipping speech: empty reply_text id=%s emotion=%s",
+                event.message_id,
+                convo.emotion,
+            )
+            return
+
         motion_plan = self.tool_executor.build_motion_plan(convo)
         gesture = motion_plan.fallback_gesture
 

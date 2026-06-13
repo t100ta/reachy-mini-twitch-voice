@@ -29,6 +29,12 @@ class ConversationFlowTest(unittest.TestCase):
         self.assertEqual(ev.text, "hello")
         self.assertEqual(ev.source, "twitch")
         self.assertEqual(ev.queue_age_ms, 0.0)
+        self.assertEqual(ev.user_id, "u1")
+
+    def test_manual_input_adapter_event_has_no_user_id(self) -> None:
+        adapter = ManualTextInputAdapter()
+        ev = adapter.build_event("hello", user_name="tester")
+        self.assertIsNone(ev.user_id)
 
     def test_manual_input_adapter_builds_manual_event(self) -> None:
         adapter = ManualTextInputAdapter()

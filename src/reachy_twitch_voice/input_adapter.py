@@ -25,6 +25,7 @@ class TwitchChatInputAdapter(InputAdapter):
             is_operator=False,
             source="twitch",
             queue_age_ms=0.0,
+            user_id=msg.user_id or None,
         )
 
 
@@ -44,6 +45,7 @@ class ManualTextInputAdapter(InputAdapter):
             is_operator=False,
             source="manual",
             queue_age_ms=0.0,
+            user_id=msg.user_id or None,
         )
 
     def build_event(self, text: str, user_name: str = "manual_tester") -> ConversationInputEvent:
@@ -58,4 +60,5 @@ class ManualTextInputAdapter(InputAdapter):
             is_operator=False,
             source="manual",
             queue_age_ms=0.0,
+            user_id=None,
         )
