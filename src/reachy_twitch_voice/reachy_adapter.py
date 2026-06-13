@@ -20,11 +20,17 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+import tempfile as _tempfile_mod
+
 from .movement_manager import MovementManager, build_gesture_move
 from .speech_tapper import frames_from_wav
 from .types import SpeechTask
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _get_web_audio_dir() -> str:
+    return os.path.join(_tempfile_mod.gettempdir(), "reachy_web_audio")
 
 
 class ReachyAdapter(ABC):
@@ -43,6 +49,15 @@ class ReachyAdapter(ABC):
     @abstractmethod
     async def idle_tick(self) -> None:
         raise NotImplementedError
+
+    def set_audio_output_target(self, target: str) -> None:
+        pass
+
+    def set_tts_voice(self, voice: str) -> None:
+        """Update TTS voice. No-op by default; override in real adapter."""
+
+    def register_web_audio_sink(self, cb: Any) -> None:
+        pass
 
 
 class MockReachyAdapter(ReachyAdapter):
@@ -92,6 +107,7 @@ class ReachySdkAdapter(ReachyAdapter):
         idle_glance_interval_sec: float = 10.0,
         speech_motion_scale: float = 0.65,
         emotion_motion_enabled: bool = True,
+        audio_output_target: str = "robot",
         client: Any | None = None,
     ) -> None:
         self.host = host
@@ -127,6 +143,10 @@ class ReachySdkAdapter(ReachyAdapter):
         self._dance_move_cls: Any | None = None
         if client is not None:
             self._ready = True
+        self._audio_output_target: str = (
+            audio_output_target if audio_output_target in {"robot", "web"} else "robot"
+        )
+        self._web_audio_sink: Any | None = None
 
     async def connect(self) -> None:
         if self._client is not None and self._ready:
@@ -175,6 +195,17 @@ class ReachySdkAdapter(ReachyAdapter):
         if mode in {"auto", "network"}:
             kwargs["host"] = self.host
         return kwargs
+
+    def set_audio_output_target(self, target: str) -> None:
+        normalized = target.strip().lower()
+        self._audio_output_target = normalized if normalized in {"robot", "web"} else "robot"
+
+    def set_tts_voice(self, voice: str) -> None:
+        self.tts_openai_voice = voice
+        LOGGER.info("TTS voice changed to: %s", voice)
+
+    def register_web_audio_sink(self, cb: Any) -> None:
+        self._web_audio_sink = cb
 
     def _apply_audio_volume_if_configured(self) -> None:
         if self.audio_volume is None:
@@ -231,7 +262,19 @@ class ReachySdkAdapter(ReachyAdapter):
                             task.motion_plan.speech_motion_scale,
                         )
                     )
-            playback_duration = await asyncio.to_thread(self._play_sound, wav_path)
+            if self._audio_output_target == "web" and self._web_audio_sink is not None:
+                import shutil
+                web_dir = _get_web_audio_dir()
+                os.makedirs(web_dir, exist_ok=True)
+                dst = os.path.join(web_dir, f"tts_{os.path.basename(wav_path)}")
+                shutil.copy2(wav_path, dst)
+                try:
+                    self._web_audio_sink(dst)
+                except Exception as exc:
+                    LOGGER.warning("web audio sink error: %s", exc)
+                playback_duration = self._wav_duration_sec(wav_path)
+            else:
+                playback_duration = await asyncio.to_thread(self._play_sound, wav_path)
             if playback_duration > 0.0:
                 await asyncio.sleep(playback_duration)
         finally:
@@ -561,7 +604,11 @@ class ReachySdkAdapter(ReachyAdapter):
         smooth_yaw = 0.0
         smooth_roll = 0.0
         smooth_gain = 0.0
-        next_phrase_at = self._rng.uniform(2.5, 4.0)
+        # A-2b: gain-valley nod detection state
+        prev_smooth_gain = 0.0
+        in_valley = False
+        # Fallback fixed-interval phrase trigger (less frequent, only fires if no valley detected)
+        next_phrase_at = self._rng.uniform(5.0, 7.0)
         while not stop_event.is_set():
             window = frames[idx : min(idx + 3, len(frames))]
             if not window:
@@ -584,13 +631,25 @@ class ReachySdkAdapter(ReachyAdapter):
                 smooth_gain,
                 motion_scale,
             )
+            # A-2b: detect gain valley (phrase boundary) → trigger nod
+            if prev_smooth_gain > 0.35 and smooth_gain < 0.20 and not in_valley:
+                in_valley = True
+                self._queue_speaking_phrase()
+            elif smooth_gain > 0.25:
+                in_valley = False
+            prev_smooth_gain = smooth_gain
+            # Fallback fixed-interval trigger (5–7s) in case gain is consistently flat
             elapsed = idx * 0.12
             if elapsed >= next_phrase_at:
                 self._queue_speaking_phrase()
-                next_phrase_at += self._rng.uniform(2.5, 4.0)
+                next_phrase_at += self._rng.uniform(5.0, 7.0)
             await asyncio.sleep(0.12)
             idx += 3
         await asyncio.to_thread(self._apply_speech_frame, 0.0, 0.0, 0.0, 0.0, motion_scale)
+        # A-2a: zero the antenna mouth-sync channel on speech end
+        manager2 = self._motion_manager
+        if manager2 is not None:
+            manager2.set_speech_antenna_offsets((0.0, 0.0))
 
     def _extract_sway_frames_from_wav(self, wav_path: str) -> list[dict[str, float]]:
         try:
@@ -628,6 +687,9 @@ class ReachySdkAdapter(ReachyAdapter):
         pitch_rad = math.radians(((pitch_deg + 0.4 * g) * (1.15 + 0.45 * g) + base_pitch_deg) * scale * (1.0 + 0.35 * energy))
         yaw_rad = math.radians((yaw_deg * (0.95 + 0.35 * g) + base_yaw_deg) * scale * (0.95 + 0.25 * energy))
         manager.set_speech_offsets((0.0, 0.0, 0.0, roll_rad, pitch_rad, yaw_rad))
+        # A-2a: Mouth-sync — antennas flicker with speech energy
+        ant_val = 0.04 * min(g, 1.0) * math.sin(2 * math.pi * 3.5 * t)
+        manager.set_speech_antenna_offsets((ant_val, ant_val))
         return True
 
     def _queue_speaking_phrase(self) -> None:

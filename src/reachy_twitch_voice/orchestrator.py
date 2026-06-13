@@ -5,7 +5,9 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
+from .app_state_store import AppStateStore
 from .config import ConversationConfig, PipelineConfig
 from .conversation_session import FALLBACK_REPLY, ConversationSession, create_conversation_session
 from .input_adapter import ManualTextInputAdapter, RealtimeInputAdapter
@@ -31,6 +33,7 @@ class AppDeps:
     tool_executor: ToolExecutor | None = None
     viewer_memory: ViewerMemoryStoreProtocol | None = None
     stream_journal: object | None = None  # StreamJournalStore or NoopStreamJournalStore
+    state_store: AppStateStore | None = None
 
 
 class AppOrchestrator:
@@ -60,6 +63,7 @@ class AppOrchestrator:
         self.input_mode: ConversationInputSource = "manual" if input_mode == "manual_text" else "twitch"
         self.channel_events_enabled: bool = deps.cfg.runtime.channel_events_enabled
         self.channel_event_types: set[str] = set(deps.cfg.runtime.channel_event_types)
+        self.audio_output_target: str = deps.cfg.reachy.audio_output_target
         # Stream journal
         journal_cfg = deps.cfg.stream_journal
         if deps.stream_journal is not None:
@@ -80,6 +84,47 @@ class AppOrchestrator:
             except Exception as exc:
                 LOGGER.warning("stream_journal: start_entry failed: %s", exc)
                 self._journal_entry_id = None
+        # Token / connection state
+        self._twitch_nick: str = deps.cfg.twitch.nick
+        self._twitch_token: str = deps.cfg.twitch.oauth_token
+        self._twitch_channel: str = deps.cfg.twitch.channel
+        self.twitch_connection_status: str = "connecting"
+        self.twitch_reconnect_event: asyncio.Event = asyncio.Event()
+        self._irc_client: object | None = None
+        self._state_store: AppStateStore | None = deps.state_store
+        self._current_tts_voice: str = deps.cfg.reachy.tts_openai_voice
+
+    def get_twitch_credentials(self) -> tuple[str, str, str]:
+        return (self._twitch_nick, self._twitch_token, self._twitch_channel)
+
+    def set_twitch_status(self, status: str) -> None:
+        self.twitch_connection_status = status
+        LOGGER.info("Twitch connection status: %s", status)
+
+    def attach_irc_client(self, client: object) -> None:
+        self._irc_client = client
+
+    def request_reconnect(self) -> None:
+        self.twitch_reconnect_event.set()
+        if self._irc_client is not None:
+            self._irc_client.request_reconnect()  # type: ignore[attr-defined]
+
+    async def set_twitch_token(self, token: str) -> None:
+        normalized = token.strip()
+        if not normalized.startswith("oauth:"):
+            normalized = f"oauth:{normalized}"
+        self._twitch_token = normalized
+        if self._state_store is not None:
+            self._state_store.save_token(normalized)
+        self.request_reconnect()
+
+    async def set_tts_voice(self, voice: str) -> None:
+        if voice == self._current_tts_voice:
+            return
+        self._current_tts_voice = voice
+        self.deps.adapter.set_tts_voice(voice)
+        if self._state_store is not None:
+            self._state_store.save_setting("tts_voice", voice)
 
     async def finalize_session(self) -> None:
         """Generate a stream summary and persist it to the journal. Called at shutdown."""
@@ -133,6 +178,14 @@ class AppOrchestrator:
 
     async def set_channel_event_types(self, types: list[str]) -> None:
         self.channel_event_types = set(types)
+
+    async def set_audio_output_target(self, target: str) -> None:
+        normalized = target.strip().lower()
+        self.audio_output_target = normalized if normalized in {"robot", "web"} else "robot"
+        self.deps.adapter.set_audio_output_target(self.audio_output_target)
+
+    def register_web_audio_sink(self, cb: Any) -> None:
+        self.deps.adapter.register_web_audio_sink(cb)
 
     async def consume_manual_text(self, text: str, user_name: str = "manual_tester") -> None:
         event = self.manual_input_adapter.build_event(text=text, user_name=user_name)

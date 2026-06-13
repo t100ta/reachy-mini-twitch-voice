@@ -64,6 +64,7 @@ class ReachyConfig:
     idle_glance_interval_sec: float = 10.0
     speech_motion_scale: float = 0.65
     emotion_motion_enabled: bool = True
+    audio_output_target: str = "robot"
 
 
 @dataclass(slots=True)
@@ -225,6 +226,9 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
         os.getenv("REACHY_EMOTION_MOTION_ENABLED", "true"),
         True,
     )
+    audio_output_target = os.getenv("REACHY_AUDIO_OUTPUT_TARGET", "robot").strip().lower() or "robot"
+    if audio_output_target not in {"robot", "web"}:
+        audio_output_target = "robot"
     input_mode = os.getenv("CONVERSATION_INPUT_MODE", "twitch").strip().lower() or "twitch"
     if input_mode not in {"twitch", "manual_text"}:
         input_mode = "twitch"
@@ -357,6 +361,7 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
             idle_glance_interval_sec=idle_glance_interval_sec,
             speech_motion_scale=speech_motion_scale,
             emotion_motion_enabled=emotion_motion_enabled,
+            audio_output_target=audio_output_target,
         ),
         conversation=ConversationConfig(
             engine=conversation_engine,

@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 
+from .app_state_store import AppStateStore
 from .config import RuntimeConfig, load_config_from_env
 from .dotenv_loader import load_env_file
 from .orchestrator import AppDeps, AppOrchestrator
@@ -81,6 +82,23 @@ def _log_stats(app: AppOrchestrator) -> None:
 
 async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> None:
     cfg = load_config_from_env(allow_dummy_twitch=bool(replay_file))
+
+    # State store: lives in the parent dir of the profiles directory
+    _config_dir = Path(cfg.conversation.profile_storage_dir).expanduser().parent
+    state_store = AppStateStore(_config_dir)
+
+    # Override token from secrets.json (takes precedence over env)
+    _saved_token = state_store.load_token()
+    if _saved_token:
+        cfg.twitch.oauth_token = _saved_token
+        LOGGER.info("Loaded Twitch token from secrets.json")
+
+    # Override TTS voice from settings.json
+    _saved_settings = state_store.load_settings()
+    if "tts_voice" in _saved_settings:
+        cfg.reachy.tts_openai_voice = _saved_settings["tts_voice"]
+        LOGGER.info("Loaded TTS voice from settings.json: %s", _saved_settings["tts_voice"])
+
     profile_store = ProfileStore(cfg.conversation.profile_storage_dir, cfg.conversation)
     active_profile = profile_store.resolve_active_profile_name(cfg.conversation.active_profile)
     if active_profile and active_profile in profile_store.list_profiles():
@@ -118,6 +136,7 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
             idle_glance_interval_sec=cfg.reachy.idle_glance_interval_sec,
             speech_motion_scale=cfg.reachy.speech_motion_scale,
             emotion_motion_enabled=cfg.reachy.emotion_motion_enabled,
+            audio_output_target=cfg.reachy.audio_output_target,
         )
         await sdk.connect()
         adapter = sdk
@@ -183,6 +202,7 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
         irc_messages=q,
         viewer_memory=viewer_memory,
         stream_journal=stream_journal,
+        state_store=state_store,
     )
     app = AppOrchestrator(deps)
     console: WebConsoleServer | None = None
@@ -210,7 +230,11 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
         nick=cfg.twitch.nick,
         oauth_token=cfg.twitch.oauth_token,
         channel=cfg.twitch.channel,
+        credentials_provider=app.get_twitch_credentials,
+        reconnect_event=app.twitch_reconnect_event,
+        status_callback=app.set_twitch_status,
     )
+    app.attach_irc_client(irc)
     producer = asyncio.create_task(_forward_irc_to_queue(irc, q, cfg.runtime, app))
     consumer = asyncio.create_task(app.run())
 

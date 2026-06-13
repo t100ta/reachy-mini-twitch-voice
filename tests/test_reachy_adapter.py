@@ -41,10 +41,14 @@ class _FakeClient:
 class _FakeMotionManager:
     def __init__(self) -> None:
         self.last_offsets = None
+        self.last_antenna_offsets = None
         self.queued_moves = []
 
     def set_speech_offsets(self, offsets):  # type: ignore[no-untyped-def]
         self.last_offsets = offsets
+
+    def set_speech_antenna_offsets(self, ant):  # type: ignore[no-untyped-def]
+        self.last_antenna_offsets = ant
 
     def queue_move(self, move):  # type: ignore[no-untyped-def]
         self.queued_moves.append(move)
