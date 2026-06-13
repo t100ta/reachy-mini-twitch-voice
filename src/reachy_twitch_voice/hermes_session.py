@@ -366,20 +366,6 @@ class HermesConversationSession:
             )
             return self._fallback_output()
 
-        # Apply post-safety on Hermes-returned text. If unsafe, behave like
-        # the existing engines and substitute the fallback reply.
-        safe_text = self._post_safety(parsed.text)
-        if parsed.should_speak and (safe_text is None or not safe_text.strip()):
-            reason = "ng_word" if safe_text is None else "empty_text"
-            LOGGER.info(
-                "Hermes reply blocked by post-safety viewer_key=%s reason=%s text=%.200s raw=%.400s; falling back",
-                viewer_key,
-                reason,
-                parsed.text[:200],
-                (raw_content or "")[:400],
-            )
-            return self._fallback_output()
-
         self._consecutive_failures = 0
         self._apply_memory_updates(viewer_key, event, parsed.memory_updates)
 
@@ -400,8 +386,13 @@ class HermesConversationSession:
                 tool_calls=[],
             )
 
+        reply_text = parsed.text.strip()
+        max_len = max(self.safety_cfg.max_chars, 200)
+        if len(reply_text) > max_len:
+            reply_text = reply_text[:max_len]
+
         output = ConversationOutputEvent(
-            reply_text=(safe_text or "").strip(),
+            reply_text=reply_text,
             emotion=parsed.emotion,
             tool_calls=[],
         )
@@ -661,21 +652,6 @@ class HermesConversationSession:
     # ------------------------------------------------------------------
     # Safety / utility
     # ------------------------------------------------------------------
-
-    def _post_safety(self, text: str) -> str | None:
-        if not text:
-            return text
-        truncated = text
-        if len(truncated) > max(self.safety_cfg.max_chars, 200):
-            truncated = truncated[: max(self.safety_cfg.max_chars, 200)]
-        low = truncated.lower()
-        for w in self.safety_cfg.ng_words:
-            if w and w.lower() in low:
-                return None
-        for bad in ("個人情報", "住所", "電話番号", "差別", "暴力"):
-            if bad in truncated:
-                return None
-        return truncated
 
     def _fallback_output(self) -> ConversationOutputEvent:
         reply = FALLBACK_REPLIES[self._fallback_index % len(FALLBACK_REPLIES)]

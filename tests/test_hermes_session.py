@@ -390,36 +390,13 @@ class HermesConversationSessionTest(unittest.TestCase):
         self.assertEqual(out.reply_text, "てすと")
         self.assertEqual(out.emotion, "joy")
 
-    def test_blocked_reply_logs_raw_content(self) -> None:
-        # post-safety block should log the raw text and reason
+    def test_reply_with_sensitive_words_is_spoken(self) -> None:
+        # Post-safety filter removed — Hermes manages its own content; any reply is spoken.
         sess = _make_session()
         content = json.dumps(
             {
                 "should_speak": True,
-                "text": "あなたの住所はどこですか",
-                "emotion": "empathy",
-                "memory_updates": [],
-            }
-        )
-        with self.assertLogs("reachy_twitch_voice.hermes_session", level="INFO") as cm:
-            with patch(
-                "reachy_twitch_voice.hermes_session.urllib.request.urlopen",
-                _fake_urlopen(_hermes_chat_response(content)),
-            ):
-                out = asyncio.run(sess.generate(_build_event()))
-        self.assertEqual(out.reply_text, FALLBACK_REPLY)
-        # Verify diagnostic log contains reason and blocked text
-        block_logs = [m for m in cm.output if "blocked by post-safety" in m]
-        self.assertTrue(block_logs, "Expected at least one 'blocked by post-safety' log line")
-        self.assertIn("ng_word", block_logs[0])
-        self.assertIn("住所", block_logs[0])
-
-    def test_post_safety_blocks_unsafe_text(self) -> None:
-        sess = _make_session()
-        content = json.dumps(
-            {
-                "should_speak": True,
-                "text": "あなたの住所を教えて",
+                "text": "住所や個人情報には触れないようにしています",
                 "emotion": "empathy",
                 "memory_updates": [],
             }
@@ -429,8 +406,7 @@ class HermesConversationSessionTest(unittest.TestCase):
             _fake_urlopen(_hermes_chat_response(content)),
         ):
             out = asyncio.run(sess.generate(_build_event()))
-        # post_safety blocks → fallback
-        self.assertEqual(out.reply_text, FALLBACK_REPLY)
+        self.assertEqual(out.reply_text, "住所や個人情報には触れないようにしています")
 
     # ------------------------------------------------------------------
     # B-2: Session-level first-visit deduplication
