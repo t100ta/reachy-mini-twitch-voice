@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-import audioop
+try:
+    import audioop
+except ModuleNotFoundError:  # Python 3.13+ removed audioop from stdlib
+    import audioop_lts as audioop  # type: ignore[no-redef]
 import asyncio
 import json
 import logging
