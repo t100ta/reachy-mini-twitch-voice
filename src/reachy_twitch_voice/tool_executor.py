@@ -40,7 +40,11 @@ class ToolExecutor:
             post_speech_settle="settle",
             idle_profile="attentive",
             baseline_mode=baseline,
-            speech_motion_scale=1.0 if output.emotion != "surprise" else 0.85,
+            speech_motion_scale={
+                "joy": 1.15,
+                "surprise": 0.90,
+                "empathy": 0.70,
+            }.get(output.emotion, 0.80),
             allow_antenna_follow_during_speech=True,
             dance_move=dance_move,
             idle_phrase_candidates=idle_candidates,

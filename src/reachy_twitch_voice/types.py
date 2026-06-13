@@ -5,7 +5,7 @@ from typing import Literal
 
 
 SafetyReason = Literal["ok", "ng_word", "spam", "too_long", "unsafe_intent"]
-GesturePreset = Literal["nod", "look", "sway", "tilt", "idle"]
+GesturePreset = Literal["nod", "look", "sway", "tilt", "idle", "blink"]
 VoiceStyle = Literal["default"]
 EmotionLabel = Literal["joy", "surprise", "empathy"]
 MotionStyle = Literal["official", "legacy"]

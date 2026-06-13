@@ -157,15 +157,20 @@ class BreathingBaselineMove:
         return float("inf")
 
     def evaluate(self, t: float) -> tuple[Pose | None, Antennas | None, float | None]:
-        phase = t
-        z_offset = 0.0035 * math.sin(2 * math.pi * 0.08 * phase)
-        pitch = math.degrees(0.02 * math.sin(2 * math.pi * 0.11 * phase))
+        # Primary breath: z-translation + pitch (slow, non-integer-ratio frequencies)
+        z_offset = 0.003 * math.sin(2 * math.pi * 0.08 * t) + 0.0012 * math.sin(2 * math.pi * 0.19 * t)
+        pitch = math.degrees(0.018 * math.sin(2 * math.pi * 0.11 * t) + 0.006 * math.sin(2 * math.pi * 0.23 * t))
+        # Subtle micro-drift: very slow yaw and roll wander
+        yaw = math.degrees(0.005 * math.sin(2 * math.pi * 0.031 * t + 1.1))
+        roll = math.degrees(0.004 * math.sin(2 * math.pi * 0.027 * t + 0.7))
         head = linear_pose_interpolation(
             self.neutral_head_pose,
-            create_head_pose(0, 0, z_offset, 0, pitch, 0, degrees=True),
+            create_head_pose(0, 0, z_offset, roll, pitch, yaw, degrees=True),
             1.0,
         )
-        return (head, (0.0, 0.0), 0.0)
+        # Subtle antenna micro-drift (within max_idle_antenna limit of 0.22)
+        ant_val = 0.008 * math.sin(2 * math.pi * 0.07 * t + 0.5)
+        return (head, (ant_val, -ant_val), 0.0)
 
 
 class LinearMove:
@@ -293,6 +298,19 @@ def build_gesture_move(
     if preset == "idle":
         attentive = create_head_pose(0, 0, 0, 0, 3.0, 0, degrees=True)
         return LinearMove([(0.0, center), (0.5, attentive), (1.0, center)], [(0.0, (0.0, 0.0)), (1.0, (0.0, 0.0))], 1.6)
+    if preset == "blink":
+        # Short antenna flick — "blink" like reflex, ~0.28s
+        peak = 0.14 + rng.uniform(0.0, 0.06)
+        jitter = rng.choice([-1, 1])
+        return LinearMove(
+            [(0.0, center), (0.5, center), (1.0, center)],
+            [
+                (0.0, (0.0, 0.0)),
+                (0.4, (a(peak * jitter), a(-peak * jitter))),
+                (1.0, (0.0, 0.0)),
+            ],
+            0.28 + rng.uniform(0.0, 0.08),
+        )
     return None
 
 
@@ -356,6 +374,18 @@ class MovementManager:
         self._command_error_interval = 1.0
         self._max_speaking_antenna = 0.12
         self._max_idle_antenna = 0.22
+        # A-3a: baseline crossfade smoothing
+        self._smoothed_baseline_pose: FullBodyPose | None = None
+        self._baseline_smooth_alpha: float = 0.06  # per tick at 100Hz → ~0.6s settling time
+        # A-3b: speech offset release ramp
+        self._offset_smooth_alpha: float = 0.12   # faster than baseline (fades in ~0.5s at 100Hz)
+        self._speech_offsets_target: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        self._speech_antenna_target: tuple[float, float] = (0.0, 0.0)
+        self._applied_speech_offsets: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        self._applied_speech_antenna: tuple[float, float] = (0.0, 0.0)
+        # A-1c: random blink trigger
+        self._last_blink_at: float = self._now()
+        self._next_blink_interval: float = rng.uniform(4.0, 9.0) if rng else 6.0
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -388,6 +418,10 @@ class MovementManager:
             self._pending_speech_offsets = offsets
             self._speech_offsets_dirty = True
 
+    def set_speech_antenna_offsets(self, ant: tuple[float, float]) -> None:
+        """Set antenna target for mouth-sync; smoothed toward each tick."""
+        self._speech_antenna_target = (float(ant[0]), float(ant[1]))
+
     def set_face_tracking_offsets(self, offsets: tuple[float, float, float, float, float, float]) -> None:
         with self._face_offsets_lock:
             self._pending_face_offsets = offsets
@@ -412,7 +446,8 @@ class MovementManager:
                 speech_offsets = self._pending_speech_offsets
                 self._speech_offsets_dirty = False
         if speech_offsets is not None:
-            self.state.speech_offsets = speech_offsets
+            # A-3b: update target instead of applying directly; _smooth_offsets() converges each tick
+            self._speech_offsets_target = speech_offsets
             self.state.update_activity()
         face_offsets = None
         with self._face_offsets_lock:
@@ -437,7 +472,7 @@ class MovementManager:
             self._is_speaking = bool(payload)
             self.state.update_activity()
         elif command == "idle_candidates":
-            candidates = [c for c in payload if c in {"nod", "look", "sway", "tilt", "idle"}]
+            candidates = [c for c in payload if c in {"nod", "look", "sway", "tilt", "idle", "blink"}]
             self._idle_phrase_candidates = candidates or ["nod", "look"]
 
     def _poll_signals(self) -> None:
@@ -497,13 +532,28 @@ class MovementManager:
         baseline_mode = self._select_baseline_mode(current_time)
         self.state.baseline_mode = baseline_mode
         if baseline_mode == "neutral":
-            pose = (self._neutral_pose, (0.0, 0.0), 0.0)
+            raw = (self._neutral_pose, (0.0, 0.0), 0.0)
         elif baseline_mode == "attentive_idle":
-            pose = (self._attentive_pose, (0.0, 0.0), 0.0)
+            raw = (self._attentive_pose, (0.0, 0.0), 0.0)
         else:
-            pose = self._breathing_move.evaluate(current_time)
-        head, antennas, body_yaw = pose
-        return (_matrix_copy(head), (float(antennas[0]), float(antennas[1])), float(body_yaw))
+            raw = self._breathing_move.evaluate(current_time)
+        t_head, t_ant_raw, t_yaw_raw = raw
+        t_ant = (float(t_ant_raw[0]) if t_ant_raw else 0.0, float(t_ant_raw[1]) if t_ant_raw else 0.0)
+        t_yaw = float(t_yaw_raw) if t_yaw_raw is not None else 0.0
+        # A-3a: exponential crossfade so baseline switches are smooth
+        if self._smoothed_baseline_pose is None:
+            self._smoothed_baseline_pose = (_matrix_copy(t_head), t_ant, t_yaw)
+            return clone_full_body_pose(self._smoothed_baseline_pose)
+        s_head, s_ant, s_yaw = self._smoothed_baseline_pose
+        alpha = self._baseline_smooth_alpha
+        new_head = linear_pose_interpolation(s_head, t_head, alpha)
+        new_ant = (
+            s_ant[0] + (t_ant[0] - s_ant[0]) * alpha,
+            s_ant[1] + (t_ant[1] - s_ant[1]) * alpha,
+        )
+        new_yaw = s_yaw + (t_yaw - s_yaw) * alpha
+        self._smoothed_baseline_pose = (new_head, new_ant, new_yaw)
+        return clone_full_body_pose(self._smoothed_baseline_pose)
 
     def _get_primary_pose(self, current_time: float) -> FullBodyPose:
         base_pose = self._get_baseline_pose(current_time)
@@ -523,16 +573,55 @@ class MovementManager:
         return base_pose
 
     def _get_secondary_pose(self) -> FullBodyPose:
-        offsets = [self.state.speech_offsets[i] + self.state.face_tracking_offsets[i] for i in range(6)]
+        offsets = [self._applied_speech_offsets[i] + self.state.face_tracking_offsets[i] for i in range(6)]
         secondary_head = create_head_pose(offsets[0], offsets[1], offsets[2], offsets[3], offsets[4], offsets[5], degrees=False, mm=False)
         return (secondary_head, (0.0, 0.0), 0.0)
 
+    def _smooth_offsets(self) -> None:
+        """A-3b: Converge applied speech offsets toward targets each control tick."""
+        alpha = self._offset_smooth_alpha
+        so = self._applied_speech_offsets
+        st = self._speech_offsets_target
+        self._applied_speech_offsets = tuple(
+            so[i] + (st[i] - so[i]) * alpha for i in range(6)
+        )
+        sa = self._applied_speech_antenna
+        at = self._speech_antenna_target
+        self._applied_speech_antenna = (
+            sa[0] + (at[0] - sa[0]) * alpha,
+            sa[1] + (at[1] - sa[1]) * alpha,
+        )
+        self.state.speech_offsets = self._applied_speech_offsets  # type: ignore[assignment]
+
+    def _maybe_trigger_idle_blink(self, current_time: float) -> None:
+        """A-1c: Trigger a random antenna blink/twitch gesture during idle."""
+        if self._is_speaking or self.state.one_shot_move is not None:
+            return
+        inactive_for = current_time - self.state.last_activity_time
+        if inactive_for < self.idle_first_delay:
+            return
+        if current_time - self._last_blink_at < self._next_blink_interval:
+            return
+        move = build_gesture_move("blink", self._rng)
+        if move is not None:
+            self.state.one_shot_move = move
+            self.state.one_shot_start_time = current_time
+            self._last_blink_at = current_time
+            self._next_blink_interval = self._rng.uniform(4.0, 9.0)
+
     def _compose_pose(self, current_time: float) -> FullBodyPose:
         self._maybe_trigger_idle_phrase(current_time)
+        self._maybe_trigger_idle_blink(current_time)
         primary_head, primary_antennas, primary_body_yaw = self._get_primary_pose(current_time)
         secondary_head, _, secondary_body_yaw = self._get_secondary_pose()
         combined_head = compose_world_offset(primary_head, secondary_head)
-        return (combined_head, primary_antennas, primary_body_yaw + secondary_body_yaw)
+        # A-3b: add speech antenna offset (mouth-sync channel) to primary antennas
+        speech_ant = self._applied_speech_antenna
+        combined_antennas = (
+            primary_antennas[0] + speech_ant[0],
+            primary_antennas[1] + speech_ant[1],
+        )
+        return (combined_head, combined_antennas, primary_body_yaw + secondary_body_yaw)
 
     def _clamp_antennas(self, target_antennas: Antennas) -> Antennas:
         limit = self._max_speaking_antenna if self._is_speaking else self._max_idle_antenna
@@ -576,6 +665,7 @@ class MovementManager:
         while not self._stop_event.is_set():
             loop_start = self._now()
             self._poll_signals()
+            self._smooth_offsets()
             self._manage_one_shot(loop_start)
             head, antennas, body_yaw = self._compose_pose(loop_start)
             self._issue_control_command(head, self._clamp_antennas(antennas), body_yaw)
@@ -585,4 +675,4 @@ class MovementManager:
                 time.sleep(sleep_time)
 
 
-__all__ = ["BreathingBaselineMove", "MovementManager", "MotionMove", "build_gesture_move", "create_head_pose"]
+__all__ = ["BreathingBaselineMove", "MovementManager", "MotionMove", "build_gesture_move", "clone_full_body_pose", "create_head_pose"]
