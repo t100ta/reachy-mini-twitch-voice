@@ -337,14 +337,82 @@ class HermesConversationSessionTest(unittest.TestCase):
         self.assertEqual(out.reply_text, "短い返答")
 
     def test_unparseable_response_falls_back(self) -> None:
+        # Multi-line reasoning dump — should still fall back (not a plain-text reply)
         sess = _make_session()
-        content = "this is just plain text with no JSON"
+        content = "Let me think about this.\nFirst, I consider the context.\nThen I respond."
         with patch(
             "reachy_twitch_voice.hermes_session.urllib.request.urlopen",
             _fake_urlopen(_hermes_chat_response(content)),
         ):
             out = asyncio.run(sess.generate(_build_event()))
         self.assertEqual(out.reply_text, FALLBACK_REPLY)
+
+    def test_hermes_native_reply_field_is_spoken(self) -> None:
+        # Hermes Agent returns "reply" (native schema), not "text" (our custom schema).
+        sess = _make_session()
+        content = json.dumps(
+            {
+                "reply": "こんばんは！今夜もよろしくね。",
+                "emotion": "joy",
+                "tool_calls": ["move.up"],
+            }
+        )
+        with patch(
+            "reachy_twitch_voice.hermes_session.urllib.request.urlopen",
+            _fake_urlopen(_hermes_chat_response(content)),
+        ):
+            out = asyncio.run(sess.generate(_build_event()))
+        self.assertEqual(out.reply_text, "こんばんは！今夜もよろしくね。")
+        self.assertEqual(out.emotion, "joy")
+
+    def test_plain_text_reply_is_spoken(self) -> None:
+        # Hermes returns a short plain-text sentence (no JSON, no newlines, no braces)
+        # — should be accepted as a reply rather than falling back.
+        sess = _make_session()
+        content = "こんにちは！よろしくね。"
+        with patch(
+            "reachy_twitch_voice.hermes_session.urllib.request.urlopen",
+            _fake_urlopen(_hermes_chat_response(content)),
+        ):
+            out = asyncio.run(sess.generate(_build_event()))
+        self.assertEqual(out.reply_text, "こんにちは！よろしくね。")
+        self.assertEqual(out.emotion, "empathy")
+
+    def test_code_fence_json_is_parsed(self) -> None:
+        # Hermes returns JSON wrapped in a Markdown code fence
+        sess = _make_session()
+        content = '```json\n{"should_speak": true, "text": "てすと", "emotion": "joy", "memory_updates": []}\n```'
+        with patch(
+            "reachy_twitch_voice.hermes_session.urllib.request.urlopen",
+            _fake_urlopen(_hermes_chat_response(content)),
+        ):
+            out = asyncio.run(sess.generate(_build_event()))
+        self.assertEqual(out.reply_text, "てすと")
+        self.assertEqual(out.emotion, "joy")
+
+    def test_blocked_reply_logs_raw_content(self) -> None:
+        # post-safety block should log the raw text and reason
+        sess = _make_session()
+        content = json.dumps(
+            {
+                "should_speak": True,
+                "text": "あなたの住所はどこですか",
+                "emotion": "empathy",
+                "memory_updates": [],
+            }
+        )
+        with self.assertLogs("reachy_twitch_voice.hermes_session", level="INFO") as cm:
+            with patch(
+                "reachy_twitch_voice.hermes_session.urllib.request.urlopen",
+                _fake_urlopen(_hermes_chat_response(content)),
+            ):
+                out = asyncio.run(sess.generate(_build_event()))
+        self.assertEqual(out.reply_text, FALLBACK_REPLY)
+        # Verify diagnostic log contains reason and blocked text
+        block_logs = [m for m in cm.output if "blocked by post-safety" in m]
+        self.assertTrue(block_logs, "Expected at least one 'blocked by post-safety' log line")
+        self.assertIn("ng_word", block_logs[0])
+        self.assertIn("住所", block_logs[0])
 
     def test_post_safety_blocks_unsafe_text(self) -> None:
         sess = _make_session()

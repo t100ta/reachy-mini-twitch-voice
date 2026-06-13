@@ -355,12 +355,14 @@ class HermesConversationSession:
             return self._fallback_output()
 
         duration_ms = (time.monotonic() - started) * 1000.0
+        raw_content = self._extract_content(response)
         parsed = self._parse_hermes_response(response)
         if parsed is None:
             LOGGER.warning(
-                "Hermes response parse failed viewer_key=%s duration_ms=%.1f; using fallback",
+                "Hermes response parse failed viewer_key=%s duration_ms=%.1f raw=%.300s; using fallback",
                 viewer_key,
                 duration_ms,
+                (raw_content or "")[:300],
             )
             return self._fallback_output()
 
@@ -368,9 +370,13 @@ class HermesConversationSession:
         # the existing engines and substitute the fallback reply.
         safe_text = self._post_safety(parsed.text)
         if parsed.should_speak and (safe_text is None or not safe_text.strip()):
+            reason = "ng_word" if safe_text is None else "empty_text"
             LOGGER.info(
-                "Hermes reply blocked by post-safety viewer_key=%s; falling back",
+                "Hermes reply blocked by post-safety viewer_key=%s reason=%s text=%.200s raw=%.400s; falling back",
                 viewer_key,
+                reason,
+                parsed.text[:200],
+                (raw_content or "")[:400],
             )
             return self._fallback_output()
 
@@ -504,20 +510,50 @@ class HermesConversationSession:
     # Parsing
     # ------------------------------------------------------------------
 
-    def _parse_hermes_response(self, response: dict[str, Any]) -> _HermesParsed | None:
+    @staticmethod
+    def _extract_content(response: dict[str, Any]) -> str | None:
+        """Safely extract the assistant's content string from a chat completion response."""
         try:
             content = response["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError):
             return None
         if not isinstance(content, str) or not content.strip():
             return None
+        return content
+
+    def _parse_hermes_response(self, response: dict[str, Any]) -> _HermesParsed | None:
+        content = self._extract_content(response)
+        if content is None:
+            return None
         obj = self._try_load_json(content)
         if obj is None:
+            # Accept a short plain-text reply if it looks like natural speech:
+            # no braces (not a broken JSON fragment), no newlines (single sentence),
+            # and short enough not to be a reasoning dump.
+            stripped = content.strip()
+            max_plain = max(self.safety_cfg.max_chars, 200) * 2
+            if (
+                "{" not in stripped
+                and "}" not in stripped
+                and "\n" not in stripped
+                and len(stripped) <= max_plain
+            ):
+                LOGGER.debug(
+                    "Hermes returned plain text (no JSON); treating as reply: %.100s", stripped
+                )
+                return _HermesParsed(
+                    text=stripped,
+                    emotion="empathy",
+                    should_speak=True,
+                    memory_updates=[],
+                )
             return None
         if not isinstance(obj, dict):
             return None
 
-        text = str(obj.get("text", "")).strip()
+        # Hermes Agent uses "reply" as the speech field; our custom schema uses "text".
+        # Accept both so we work with the native Hermes schema without patching the agent.
+        text = str(obj.get("text") or obj.get("reply") or "").strip()
         should_speak_raw = obj.get("should_speak", True)
         should_speak = bool(should_speak_raw) if should_speak_raw is not None else True
         emotion = _coerce_emotion(str(obj.get("emotion", "empathy")))
@@ -531,16 +567,41 @@ class HermesConversationSession:
 
     @staticmethod
     def _try_load_json(content: str) -> Any | None:
+        # Strip Markdown code fences (```json...``` or ```...```)
         text = content.strip()
+        fence_match = re.match(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", text, re.S)
+        if fence_match:
+            text = fence_match.group(1).strip()
+        # Fast path: direct parse
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
-        match = re.search(r"\{.*\}", text, flags=re.S)
-        if match is None:
+        # Find the last balanced {...} in the text.
+        # This handles "reasoning text... {actual JSON}" patterns without
+        # the greedy re.S match swallowing the wrong span.
+        candidate: str | None = None
+        end = len(text) - 1
+        while end >= 0:
+            if text[end] == "}":
+                depth = 0
+                i = end
+                while i >= 0:
+                    if text[i] == "}":
+                        depth += 1
+                    elif text[i] == "{":
+                        depth -= 1
+                        if depth == 0:
+                            candidate = text[i : end + 1]
+                            break
+                    i -= 1
+                if candidate is not None:
+                    break
+            end -= 1
+        if candidate is None:
             return None
         try:
-            return json.loads(match.group(0))
+            return json.loads(candidate)
         except json.JSONDecodeError:
             return None
 
@@ -710,10 +771,9 @@ class HermesConversationSession:
             LOGGER.warning("stream_summary: request failed: %s", exc)
             return None
 
-        try:
-            content = response["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            LOGGER.warning("stream_summary: unexpected response structure: %s", exc)
+        content = self._extract_content(response)
+        if content is None:
+            LOGGER.warning("stream_summary: unexpected response structure or empty content")
             return None
 
         obj = self._try_load_json(content)
