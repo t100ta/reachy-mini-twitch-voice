@@ -5,6 +5,7 @@ try:
 except ModuleNotFoundError:  # Python 3.13+ removed audioop from stdlib
     import audioop_lts as audioop  # type: ignore[no-redef]
 import asyncio
+import email.utils
 import json
 import logging
 import math
@@ -27,6 +28,35 @@ from .speech_tapper import frames_from_wav
 from .types import SpeechTask
 
 LOGGER = logging.getLogger(__name__)
+
+# TTS retry / fallback constants
+_RETRY_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+_TTS_MAX_ATTEMPTS: int = 3
+_TTS_BACKOFF_CAP_SEC: float = 8.0
+
+
+def _parse_retry_after(headers: Any) -> float | None:
+    """Parse a ``Retry-After`` response header into seconds.
+
+    Returns the number of seconds to wait, or *None* if the header is absent or
+    cannot be parsed.
+    """
+    try:
+        val = headers.get("Retry-After")
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            pass
+        # Try HTTP-date format
+        dt = email.utils.parsedate_to_datetime(val)
+        import datetime
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        diff = (dt - now).total_seconds()
+        return max(0.0, diff)
+    except Exception:
+        return None
 
 
 def _get_web_audio_dir() -> str:
@@ -237,7 +267,7 @@ class ReachySdkAdapter(ReachyAdapter):
         if not self._ready or self._client is None:
             raise RuntimeError("ReachySdkAdapter is not connected")
 
-        wav_path = self._synthesize_to_wav(task.text_ja)
+        wav_path = await asyncio.to_thread(self._synthesize_to_wav, task.text_ja)
         speech_motion_task: asyncio.Task[None] | None = None
         speech_motion_stop = asyncio.Event()
         manager = self._ensure_motion_manager_started()
@@ -497,25 +527,48 @@ class ReachySdkAdapter(ReachyAdapter):
         with tempfile.NamedTemporaryFile(prefix="reachy_tts_", suffix=".wav", delete=False) as f:
             wav_path = f.name
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.tts_openai_model,
             "voice": self.tts_openai_voice,
             "input": text,
             "response_format": self.tts_openai_format,
             "speed": self.tts_openai_speed,
         }
-        try:
-            audio_bytes = self._request_openai_tts(payload)
-        except urllib.error.HTTPError as exc:
-            if exc.code == 400 and "speed" in payload:
-                payload.pop("speed", None)
+
+        audio_bytes: bytes | None = None
+        for attempt in range(_TTS_MAX_ATTEMPTS):
+            try:
                 audio_bytes = self._request_openai_tts(payload)
-            else:
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code == 400 and "speed" in payload:
+                    payload.pop("speed", None)
+                    continue
+                if exc.code in _RETRY_STATUS and attempt < _TTS_MAX_ATTEMPTS - 1:
+                    retry_after = _parse_retry_after(exc.headers)
+                    backoff = min(0.5 * 2**attempt, _TTS_BACKOFF_CAP_SEC)
+                    wait = min(
+                        retry_after if retry_after is not None else backoff,
+                        _TTS_BACKOFF_CAP_SEC,
+                    ) + random.uniform(0, 0.3)
+                    LOGGER.warning(
+                        "OpenAI TTS HTTP %s; retrying in %.1fs (attempt %d/%d)",
+                        exc.code, wait, attempt + 1, _TTS_MAX_ATTEMPTS,
+                    )
+                    time.sleep(wait)
+                    continue
+                # Non-retryable HTTP error or last attempt exhausted
                 self._cleanup_temp_wav(wav_path)
-                raise RuntimeError(f"OpenAI TTS request failed: HTTP {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                LOGGER.warning("OpenAI TTS failed (HTTP %s); falling back to espeak-ng", exc.code)
+                return self._synthesize_with_espeak(text)
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                self._cleanup_temp_wav(wav_path)
+                LOGGER.warning("OpenAI TTS failed (%s); falling back to espeak-ng", exc)
+                return self._synthesize_with_espeak(text)
+        else:
+            # All retries exhausted without a successful break
             self._cleanup_temp_wav(wav_path)
-            raise RuntimeError(f"OpenAI TTS request failed: {exc}") from exc
+            return self._synthesize_with_espeak(text)
 
         with open(wav_path, "wb") as f:
             f.write(audio_bytes)
