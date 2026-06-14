@@ -31,7 +31,7 @@ class RuntimeConfig:
     channel_event_types: list[str] = field(
         default_factory=lambda: ["raid", "sub", "resub", "subgift"]
     )
-    filler_delay_sec: float = 3.5  # trigger filler speech after this many seconds
+    filler_delay_sec: float = 6.0  # trigger filler speech after this many seconds
 
 
 @dataclass(slots=True)
@@ -168,7 +168,7 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
     drop_policy = os.getenv("QUEUE_DROP_POLICY", "drop_oldest").strip().lower() or "drop_oldest"
     if drop_policy not in {"drop_oldest"}:
         drop_policy = "drop_oldest"
-    filler_delay_sec = float(os.getenv("FILLER_DELAY_SEC", "3.5"))
+    filler_delay_sec = float(os.getenv("FILLER_DELAY_SEC", "6.0"))
     channel_events_enabled = _as_bool(os.getenv("CHANNEL_EVENTS_ENABLED", "true"), True)
     channel_event_types_raw = os.getenv("CHANNEL_EVENT_TYPES", "").strip()
     if channel_event_types_raw:

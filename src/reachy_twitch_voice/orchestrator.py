@@ -24,10 +24,10 @@ from .viewer_memory_store import NoopViewerMemoryStore, ViewerMemoryStoreProtoco
 LOGGER = logging.getLogger(__name__)
 
 FILLER_REPLIES: tuple[str, ...] = (
-    "いい質問だね、ちょっと調べてみる！",
-    "おっ、それ気になる。少し待ってね！",
-    "ちょっと調べるから待っててね！",
-    "むずかしい質問だ、少し考える時間ちょうだい！",
+    "うーん、ちょっと待ってね。",
+    "なるほどね、えーっと…",
+    "ふむ、ちょっと考えるね。",
+    "おっ、いい質問だね。少し待ってね。",
 )
 _MAX_DEFERRED_CONCURRENT = 3  # cap simultaneous in-flight research tasks
 
@@ -312,7 +312,7 @@ class AppOrchestrator:
             text_ja=text,
             voice_style="default",
             gesture_preset="nod",
-            emotion="surprise",
+            emotion="neutral",
             deadline_ms=self._speech_deadline_ms(text),
             motion_plan=MotionPlan(fallback_gesture="nod"),
         )
