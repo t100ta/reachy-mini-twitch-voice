@@ -31,6 +31,7 @@ class RuntimeConfig:
     channel_event_types: list[str] = field(
         default_factory=lambda: ["raid", "sub", "resub", "subgift"]
     )
+    filler_delay_sec: float = 3.5  # trigger filler speech after this many seconds
 
 
 @dataclass(slots=True)
@@ -95,7 +96,7 @@ class HermesConfig:
     base_url: str = "http://127.0.0.1:8642/v1"
     api_key: str = ""
     model: str = "hermes-agent"
-    timeout_sec: float = 12.0
+    timeout_sec: float = 30.0
     stream: bool = False
     use_responses_api: bool = False
     conversation_prefix: str = "reachy-twitch"
@@ -167,6 +168,7 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
     drop_policy = os.getenv("QUEUE_DROP_POLICY", "drop_oldest").strip().lower() or "drop_oldest"
     if drop_policy not in {"drop_oldest"}:
         drop_policy = "drop_oldest"
+    filler_delay_sec = float(os.getenv("FILLER_DELAY_SEC", "3.5"))
     channel_events_enabled = _as_bool(os.getenv("CHANNEL_EVENTS_ENABLED", "true"), True)
     channel_event_types_raw = os.getenv("CHANNEL_EVENT_TYPES", "").strip()
     if channel_event_types_raw:
@@ -277,7 +279,7 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
     )
     hermes_api_key = os.getenv("HERMES_API_KEY", "").strip()
     hermes_model = os.getenv("HERMES_MODEL", "hermes-agent").strip() or "hermes-agent"
-    hermes_timeout_sec = float(os.getenv("HERMES_TIMEOUT_SEC", "12.0"))
+    hermes_timeout_sec = float(os.getenv("HERMES_TIMEOUT_SEC", "30.0"))
     hermes_stream = _as_bool(os.getenv("HERMES_STREAM", "false"), False)
     hermes_use_responses_api = _as_bool(
         os.getenv("HERMES_USE_RESPONSES_API", "false"), False
@@ -337,6 +339,7 @@ def load_config_from_env(allow_dummy_twitch: bool = False) -> PipelineConfig:
             drop_policy=drop_policy,
             channel_events_enabled=channel_events_enabled,
             channel_event_types=channel_event_types,
+            filler_delay_sec=filler_delay_sec,
         ),
         reachy=ReachyConfig(
             tts_engine=tts_engine,

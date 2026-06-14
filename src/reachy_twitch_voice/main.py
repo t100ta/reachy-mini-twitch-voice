@@ -259,6 +259,7 @@ async def run_app(use_mock: bool, reachy_host: str, replay_file: str | None) -> 
         consumer.cancel()
         await asyncio.gather(producer, consumer, return_exceptions=True)
         await app.finalize_session()
+        await app.cancel_deferred_tasks()
         stop = getattr(adapter, "stop", None)
         if callable(stop):
             await stop()

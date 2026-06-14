@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random as _random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,6 +22,14 @@ from .types import ChannelEvent, ConversationInputEvent, ConversationInputSource
 from .viewer_memory_store import NoopViewerMemoryStore, ViewerMemoryStoreProtocol
 
 LOGGER = logging.getLogger(__name__)
+
+FILLER_REPLIES: tuple[str, ...] = (
+    "いい質問だね、ちょっと調べてみる！",
+    "おっ、それ気になる。少し待ってね！",
+    "ちょっと調べるから待っててね！",
+    "むずかしい質問だ、少し考える時間ちょうだい！",
+)
+_MAX_DEFERRED_CONCURRENT = 3  # cap simultaneous in-flight research tasks
 
 
 @dataclass(slots=True)
@@ -93,6 +102,8 @@ class AppOrchestrator:
         self._irc_client: object | None = None
         self._state_store: AppStateStore | None = deps.state_store
         self._current_tts_voice: str = deps.cfg.reachy.tts_openai_voice
+        self._speech_lock: asyncio.Lock = asyncio.Lock()
+        self._deferred_tasks: set[asyncio.Task] = set()  # keep refs to prevent GC
 
     def get_twitch_credentials(self) -> tuple[str, str, str]:
         return (self._twitch_nick, self._twitch_token, self._twitch_channel)
@@ -252,23 +263,26 @@ class AppOrchestrator:
         )
         await self._process_event(event)
 
-    async def _process_event(self, event: ConversationInputEvent) -> None:
-        try:
-            convo = await self.conversation.generate(event)
-        except Exception as exc:
-            LOGGER.warning(
-                "Conversation generation failed id=%s error=%s; using fallback",
-                event.message_id,
-                exc,
-            )
-            convo = ConversationOutputEvent(
-                reply_text=FALLBACK_REPLY,
-                emotion="empathy",
-                tool_calls=[],
-            )
+    async def _speak(self, task: SpeechTask, event: ConversationInputEvent) -> None:
+        """Serialized speech playback — acquires _speech_lock for the duration of playback."""
+        timeout_s = task.deadline_ms / 1000
+        reaction_start_ms = (time.time() - event.received_at) * 1000
+        async with self._speech_lock:
+            try:
+                await asyncio.wait_for(self.deps.adapter.speak(task), timeout=timeout_s)
+                self.stats.processed += 1
+                self.stats.add_latency(reaction_start_ms)
+            except Exception as exc:
+                self.stats.failed += 1
+                LOGGER.warning(
+                    "Failed to speak message id=%s error_type=%s error=%r",
+                    event.message_id,
+                    type(exc).__name__,
+                    exc,
+                )
 
-        # Hermes (and any future engine) may decide to skip speech by returning
-        # an empty reply_text (should_speak=false). Treat that as silence.
+    async def _emit_speech(self, convo: ConversationOutputEvent, event: ConversationInputEvent) -> None:
+        """Build a SpeechTask from a ConversationOutputEvent and call _speak."""
         if not convo.reply_text.strip():
             LOGGER.info(
                 "Skipping speech: empty reply_text id=%s emotion=%s",
@@ -276,10 +290,8 @@ class AppOrchestrator:
                 convo.emotion,
             )
             return
-
         motion_plan = self.tool_executor.build_motion_plan(convo)
         gesture = motion_plan.fallback_gesture
-
         task = SpeechTask(
             message_id=event.message_id,
             text_ja=convo.reply_text,
@@ -289,21 +301,111 @@ class AppOrchestrator:
             deadline_ms=self._speech_deadline_ms(convo.reply_text),
             motion_plan=motion_plan,
         )
+        await self._speak(task, event)
 
-        timeout_s = task.deadline_ms / 1000
-        reaction_start_ms = (time.time() - event.received_at) * 1000
-        try:
-            await asyncio.wait_for(self.deps.adapter.speak(task), timeout=timeout_s)
-            self.stats.processed += 1
-            self.stats.add_latency(reaction_start_ms)
-        except Exception as exc:
-            self.stats.failed += 1
+    def _make_filler_task(self, event: ConversationInputEvent) -> SpeechTask:
+        """Build a short filler SpeechTask to speak while research runs in background."""
+        from .types import MotionPlan
+        text = _random.choice(FILLER_REPLIES)
+        return SpeechTask(
+            message_id=event.message_id,
+            text_ja=text,
+            voice_style="default",
+            gesture_preset="nod",
+            emotion="surprise",
+            deadline_ms=self._speech_deadline_ms(text),
+            motion_plan=MotionPlan(fallback_gesture="nod"),
+        )
+
+    def _spawn_deferred(self, gen_task: asyncio.Task, event: ConversationInputEvent) -> None:
+        """Wrap a still-running generation task and deliver its result via _speak when done."""
+        async def _complete() -> None:
+            try:
+                convo = await gen_task
+            except Exception as exc:
+                LOGGER.warning(
+                    "Deferred generation failed id=%s err=%s; skipping speech",
+                    event.message_id,
+                    exc,
+                )
+                return
+            # Prefix reply with the original asker's display name for clarity
+            if convo.reply_text.strip():
+                display = (event.display_name or event.user_name or "").strip()
+                if display and not convo.reply_text.startswith(display):
+                    convo = ConversationOutputEvent(
+                        reply_text=f"{display}、{convo.reply_text}",
+                        emotion=convo.emotion,
+                        tool_calls=convo.tool_calls,
+                    )
+            await self._emit_speech(convo, event)
+
+        task = asyncio.create_task(_complete())
+        self._deferred_tasks.add(task)
+        task.add_done_callback(self._deferred_tasks.discard)
+        LOGGER.info(
+            "Deferred research task spawned id=%s total_deferred=%d",
+            event.message_id,
+            len(self._deferred_tasks),
+        )
+
+    async def cancel_deferred_tasks(self) -> None:
+        """Cancel all in-flight deferred research tasks. Called at shutdown."""
+        tasks = list(self._deferred_tasks)
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._deferred_tasks.clear()
+
+    async def _process_event(self, event: ConversationInputEvent) -> None:
+        # Cap concurrent deferred tasks to avoid runaway resource usage
+        if len(self._deferred_tasks) >= _MAX_DEFERRED_CONCURRENT:
             LOGGER.warning(
-                "Failed to speak message id=%s error_type=%s error=%r",
+                "Deferred task cap reached (%d); using fallback for id=%s",
+                _MAX_DEFERRED_CONCURRENT,
                 event.message_id,
-                type(exc).__name__,
-                exc,
             )
+            fallback = ConversationOutputEvent(
+                reply_text=FALLBACK_REPLY,
+                emotion="empathy",
+                tool_calls=[],
+            )
+            await self._emit_speech(fallback, event)
+            return
+
+        gen_task: asyncio.Task = asyncio.create_task(self.conversation.generate(event))
+        filler_delay = self.deps.cfg.runtime.filler_delay_sec
+
+        done, _ = await asyncio.wait({gen_task}, timeout=filler_delay)
+
+        if gen_task in done:
+            # Fast path: response arrived before filler threshold — no filler needed
+            try:
+                convo = gen_task.result()
+            except Exception as exc:
+                LOGGER.warning(
+                    "Conversation generation failed id=%s error=%s; using fallback",
+                    event.message_id,
+                    exc,
+                )
+                convo = ConversationOutputEvent(
+                    reply_text=FALLBACK_REPLY,
+                    emotion="empathy",
+                    tool_calls=[],
+                )
+            await self._emit_speech(convo, event)
+        else:
+            # Slow path: emit filler immediately, defer the real answer
+            LOGGER.info(
+                "Filler triggered: generation still in-flight after %.1fs id=%s",
+                filler_delay,
+                event.message_id,
+            )
+            filler = self._make_filler_task(event)
+            await self._speak(filler, event)
+            self._spawn_deferred(gen_task, event)
+            # Return immediately — main loop is free to handle next message
 
     async def run(self) -> None:
         while True:

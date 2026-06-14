@@ -322,7 +322,15 @@ class HermesConversationSession:
                 response = await asyncio.to_thread(self._post_chat_completions, body)
                 last_exc = None
                 break
-            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+            except TimeoutError as exc:
+                last_exc = exc
+                LOGGER.warning(
+                    "Hermes request timed out (no retry) viewer_key=%s err=%s",
+                    viewer_key,
+                    exc,
+                )
+                break  # don't retry on timeout — caller already handles via filler
+            except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
                 last_exc = exc
                 if attempt < self.hermes_cfg.retry_count:
                     LOGGER.warning(
